@@ -192,13 +192,15 @@ struct UiRun<'a> {
 fn run_ui(run: &UiRun) -> io::Result<ExitStatus> {
     let name = run.user.unwrap_or("nobody");
     let home = run.runtime.join(format!("home-{name}"));
-    let snap = run
+    let passwd = run
         .user
-        .and_then(|n| sys::read_passwd().into_iter().find(|p| p.name == n))
-        .and_then(|p| export::snapshot(&p));
-    match &snap {
-        Some(snap) => export::copy_home(snap, &home)?,
-        None => {
+        .and_then(|n| sys::read_passwd().into_iter().find(|p| p.name == n));
+    let snap = passwd.as_ref().and_then(export::snapshot);
+    match (&passwd, &snap) {
+        (Some(passwd), Some(snap)) => {
+            export::copy_home(snap, export::splash_dir(passwd).as_deref(), &home)?
+        }
+        _ => {
             if home.exists() {
                 fs::remove_dir_all(&home)?;
             }
