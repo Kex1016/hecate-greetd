@@ -53,7 +53,7 @@ missing Qt module), a minimal fallback greeter with no shell code takes over.
 ```nix
 # flake.nix
 inputs.hecate-greetd = {
-  url = "git+https://github.com/Kex1016/hecate-greetd";
+  url = "github:Kex1016/hecate-greetd";
   inputs.hecate.follows = "hecate";   # the same hecate and shell your users run
 };
 
