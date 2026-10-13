@@ -1,0 +1,88 @@
+{
+  "nodes": {
+    "crane": {
+      "locked": {
+        "lastModified": 1790899423,
+        "narHash": "sha256-THGtz65UGJU+sonZidRboyCMk+9DclpMF7pwL4uDV4M=",
+        "ref": "refs/heads/master",
+        "rev": "47b6b27ed9a3a9181415e4367d0c30ab2a0e0250",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/ipetkov/crane"
+      },
+      "original": {
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/ipetkov/crane"
+      }
+    },
+    "hecate": {
+      "inputs": {
+        "crane": "crane",
+        "home-manager": "home-manager",
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1791903927,
+        "narHash": "sha256-0STN48BmZa2z+zuLXPLQDHBN5mDvrQv38igWT/M4eEA=",
+        "ref": "feat/v1",
+        "rev": "0ed96eda8fc48ea0a152efce680aab177bdf3e04",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/Kex1016/wl-hex"
+      },
+      "original": {
+        "ref": "feat/v1",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/Kex1016/wl-hex"
+      }
+    },
+    "home-manager": {
+      "inputs": {
+        "nixpkgs": [
+          "hecate",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1791642191,
+        "narHash": "sha256-0bK0A59rVUn1SRZzo4cNi4VSqAe7vR1gL2/MZl53Frw=",
+        "ref": "refs/heads/master",
+        "rev": "c58f54c733a7894d84fa2fdff26cc12088c4b78c",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/nix-community/home-manager"
+      },
+      "original": {
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/nix-community/home-manager"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1791487292,
+        "narHash": "sha256-6BIvCXtdLW4HQwsOGkgH444aB3vCbHypE9TA78ireh8=",
+        "rev": "8edc0c72e3a38faf5434e40d1f19431125fe4b30",
+        "type": "tarball",
+        "url": "https://releases.nixos.org/nixpkgs/nixpkgs-26.11pre1088030.8edc0c72e3a3/nixexprs.tar.xz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz"
+      }
+    },
+    "root": {
+      "inputs": {
+        "hecate": "hecate",
+        "nixpkgs": [
+          "hecate",
+          "nixpkgs"
+        ]
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
