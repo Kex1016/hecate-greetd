@@ -192,6 +192,27 @@ in
       };
     };
 
+    # Between the login screen's hecate exiting and the session's starting nothing has the GPU
+    # open, and the kernel would put the text console back on screen. Holding it open keeps
+    # the login screen's last frame up (hecate leaves it there) until the session's first
+    # frame, the same picture, replaces it.
+    systemd.services.hecate-greetd-hold-gpu = {
+      description = "Keep the GPU open between the login screen and the session";
+      wantedBy = [ "greetd.service" ];
+      partOf = [ "greetd.service" ];
+      script = ''
+        # The GPU's driver may load after this starts; the login screen takes longer anyway.
+        for _ in $(seq 60); do
+          compgen -G '/dev/dri/card*' >/dev/null && break
+          sleep 1
+        done
+        for card in /dev/dri/card*; do
+          exec {fd}<"$card"
+        done
+        exec sleep infinity
+      '';
+    };
+
     users.users.greeter = {
       home = "/var/lib/hecate-greetd/greeter";
       createHome = true;

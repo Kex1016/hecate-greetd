@@ -44,6 +44,12 @@ writes its login splash pictures (`<output>.png`, wallpaper and shell, never win
 to `splash/` in there when `splash.dir` points at it, at every lock and logout; the login
 screen only uses them while the user shares their look.
 
+Between the login screen and the session, the screen doesn't go dark: hecate leaves its last
+frame up when it exits and starts without turning outputs off, and the NixOS module's
+`hecate-greetd-hold-gpu` service keeps the GPU open in between, so the kernel doesn't put the
+text console back. The login screen's last frame (your desktop picture) stays until the
+session's first frame, the same picture, replaces it.
+
 The greeter treats an export as untrusted: it checks the owner, never follows symlinks, caps
 sizes, takes only those compositor tables (no autostart, binds or environment), validates them
 with `hecate validate`, works on a private copy and kills everything a UI instance started
