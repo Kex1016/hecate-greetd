@@ -3,8 +3,8 @@
 
   inputs = {
     # The compositor and the shell whose lock screen this is. git+https so a private repo is
-    # fetched with git's credentials. feat/v1 until it's merged.
-    hecate.url = "git+https://github.com/Kex1016/wl-hex?ref=feat/v1&shallow=1";
+    # fetched with git's credentials.
+    hecate.url = "git+https://github.com/Kex1016/wl-hex?shallow=1";
     nixpkgs.follows = "hecate/nixpkgs";
   };
 

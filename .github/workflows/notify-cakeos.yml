@@ -1,0 +1,28 @@
+name: Notify CakeOS
+
+# CakeOS pins hecate-greetd in its flake.lock; tell its flake-update workflow that main moved so it
+# bumps the input (and reports what changed) without waiting for its weekly run.
+# Needs the CAKEOS_DISPATCH_TOKEN secret: a fine-grained token on Kex1016/cakeos with
+# Contents: read and write (what repository_dispatch requires). Without it this is skipped.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send repository_dispatch to Kex1016/cakeos
+        env:
+          TOKEN: ${{ secrets.CAKEOS_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::CAKEOS_DISPATCH_TOKEN is not set; CakeOS picks this up on its weekly update."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/Kex1016/cakeos/dispatches \
+            -d '{"event_type":"flake-input-updated","client_payload":{"repo":"${{ github.repository }}","sha":"${{ github.sha }}"}}'

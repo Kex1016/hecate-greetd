@@ -32,7 +32,6 @@
         "url": "https://github.com/Kex1016/wl-hex"
       },
       "original": {
-        "ref": "feat/v1",
         "shallow": true,
         "type": "git",
         "url": "https://github.com/Kex1016/wl-hex"
