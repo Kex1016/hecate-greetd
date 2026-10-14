@@ -49,6 +49,24 @@ PanelWindow {
         }
     }
 
+    // The user's desktop as hecate last saved it (copied in by the supervisor), faded in once
+    // the unlock has brought the wallpaper to full screen: the session shows the same picture
+    // from its first frame until its shell is up. None saved yet: the plain unlock.
+    Image {
+        anchors.fill: parent
+        source: `file://${Quickshell.env("XDG_STATE_HOME")}/hecate/snapshots/${surface.modelData.name}.png`
+        asynchronous: true
+        cache: false
+        opacity: surface.greeter.launching && status === Image.Ready ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity {
+            NumberAnimation {
+                duration: 300
+                easing.type: Easing.OutCubic
+            }
+        }
+    }
+
     // Between two users' instances.
     Rectangle {
         anchors.fill: parent

@@ -159,6 +159,17 @@ in
       '';
     };
 
+    hideConsole = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Keep the text console off tty1, where greetd runs. greetd switches the terminal to text
+        mode before starting a session, and the console would flash up between the login
+        screen and the session. Boot messages, `boot.shell_on_fail` and the emergency shell go
+        to tty2 instead (Ctrl+Alt+F2); tty2 and up keep their consoles.
+      '';
+    };
+
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = with pkgs; [
@@ -191,6 +202,32 @@ in
         };
       };
     };
+
+    # Between the login screen's hecate exiting and the session's starting nothing has the GPU
+    # open, and the kernel would put the text console back on screen. Holding it open keeps
+    # the login screen's last frame up (hecate leaves it there) until the session's first
+    # frame, the same picture, replaces it.
+    systemd.services.hecate-greetd-hold-gpu = {
+      description = "Keep the GPU open between the login screen and the session";
+      wantedBy = [ "greetd.service" ];
+      partOf = [ "greetd.service" ];
+      script = ''
+        # The GPU's driver may load after this starts; the login screen takes longer anyway.
+        for _ in $(seq 60); do
+          compgen -G '/dev/dri/card*' >/dev/null && break
+          sleep 1
+        done
+        for card in /dev/dri/card*; do
+          exec {fd}<"$card"
+        done
+        exec sleep infinity
+      '';
+    };
+
+    boot.kernelParams = lib.mkIf cfg.hideConsole [
+      "fbcon=vc:2-63"
+      "console=tty2"
+    ];
 
     users.users.greeter = {
       home = "/var/lib/hecate-greetd/greeter";

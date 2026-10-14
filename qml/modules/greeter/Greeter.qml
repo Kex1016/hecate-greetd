@@ -16,7 +16,9 @@ import qs.modules.ii.background
  * `hecate-greetd ui` starts this with HOME pointing at a copy of the selected user's export, so
  * Config, the colours and the wallpaper layer are theirs, and hecate already has their monitor
  * layout. Picking another user exits with code 10 and the supervisor starts a fresh instance
- * for them; logging in plays the unlock animation, then hands the session to greetd.
+ * for them; logging in plays the unlock animation, fades into the user's desktop as hecate
+ * last saved it (its login splash, which the session shows until its shell is up), then hands
+ * the session to greetd.
  */
 Scope {
     id: root
@@ -37,6 +39,8 @@ Scope {
     property bool shown: false
     // Fading to black before another user's instance takes over.
     property bool leaving: false
+    // Logged in: fading into the desktop picture before the session starts.
+    property bool launching: false
 
     Component.onCompleted: {
         GlobalStates.greeterMode = true;
@@ -162,6 +166,16 @@ Scope {
         // As long as the centered wallpaper's grow (800 ms), which outlasts the blur's zoom.
         interval: 850
         onTriggered: {
+            root.launching = true;
+            handoffTimer.start();
+        }
+    }
+
+    Timer {
+        id: handoffTimer
+        // The desktop picture's fade (GreeterSurface).
+        interval: 320
+        onTriggered: {
             if (root.preview || !Greetd.available) {
                 Qt.exit(0);
                 return;
@@ -194,7 +208,10 @@ Scope {
         enabled: !root.preview && Greetd.available
         function onError(error) {
             // A launch greetd refused: come back so the user can try again.
-            if (launchTimer.running || !GlobalStates.screenLocked) {
+            if (launchTimer.running || handoffTimer.running || !GlobalStates.screenLocked) {
+                launchTimer.stop();
+                handoffTimer.stop();
+                root.launching = false;
                 GlobalStates.screenLocked = true;
                 root.shown = true;
             }

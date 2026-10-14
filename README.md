@@ -8,8 +8,9 @@ screen, running inside hecate, with the look of whoever is logging in.
   next to the shell's `shell.qml`, so it runs the shell's own `LockSurface`, wallpaper layer,
   clock and desktop widgets, colours and animations: the centered wallpaper in its shape (click
   to thump, scroll to change the shape) or the zoomed blur, material-shape password dots, the
-  shake on a wrong password, the toolbar pop-in, and on login the shell's unlock animation into
-  the session.
+  shake on a wrong password, the toolbar pop-in, and on login the shell's unlock animation, then
+  a fade into your desktop as it was (hecate's login splash), which the session keeps on screen
+  until its shell is up.
 - **The selected user's settings.** Their shell config, generated Material colours, wallpapers
   (per-monitor ones too), avatar, clock style and widgets.
 - **The selected user's monitors.** Their hecate `outputs` (mode, refresh rate, scale,
@@ -38,7 +39,19 @@ The greeter can't read home directories, so the user's shell shares what it need
 shell config (image paths rewritten to copies), the generated colours, the avatar and the
 compositor tables the login screen takes (`outputs`, `keyboard`, `input`, `cursor`, `blur`,
 `animations`, read from the running hecate) into `/var/lib/hecate-greetd/users/<user>/`,
-which the user owns and the `greeter` group reads. Snapshots are swapped atomically.
+which the user owns and the `greeter` group reads. Snapshots are swapped atomically. hecate
+writes its login splash pictures (`<output>.png`, wallpaper and shell, never windows) straight
+to `splash/` in there when `splash.dir` points at it, at every lock and logout; the login
+screen only uses them while the user shares their look.
+
+Between the login screen and the session, the screen doesn't go dark: hecate leaves its last
+frame up when it exits and starts without turning outputs off, and the NixOS module's
+`hecate-greetd-hold-gpu` service keeps the GPU open in between, so the kernel doesn't put the
+text console back. The login screen's last frame (your desktop picture) stays until the
+session's first frame, the same picture, replaces it. greetd itself switches tty1 to text mode
+before each session, so `services.hecate-greetd.hideConsole` (on by default) keeps the console
+off tty1 (`fbcon=vc:2-63`); boot messages and the emergency shell go to tty2 (`console=tty2`,
+Ctrl+Alt+F2).
 
 The greeter treats an export as untrusted: it checks the owner, never follows symlinks, caps
 sizes, takes only those compositor tables (no autostart, binds or environment), validates them

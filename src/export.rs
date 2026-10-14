@@ -14,6 +14,8 @@
 //!     compositor.json          hecate settings for the login screen (outputs, keyboard, ...)
 //!     manifest.json
 //!   files/<hash>.<ext>          wallpapers and other images the config refers to
+//!   splash/<output>.png         the desktop as it was, written by hecate itself (`splash.dir`)
+//!                               at lock and logout, which the login screen fades into
 //! ```
 //!
 //! Everything in there is the user's to write, so the greeter treats it as untrusted: it checks
@@ -105,8 +107,9 @@ pub fn compositor_fragment(snap: &Path) -> Value {
     )
 }
 
-/// Copy a snapshot's home tree into `dest` (the greeter's private, writable copy).
-pub fn copy_home(snap: &Path, dest: &Path) -> io::Result<()> {
+/// Copy a snapshot's home tree into `dest` (the greeter's private, writable copy), and the
+/// user's splash pictures (`splash_dir`) where hecate looks for them by default.
+pub fn copy_home(snap: &Path, splash: Option<&Path>, dest: &Path) -> io::Result<()> {
     if dest.exists() {
         fs::remove_dir_all(dest)?;
     }
@@ -114,7 +117,21 @@ pub fn copy_home(snap: &Path, dest: &Path) -> io::Result<()> {
     for meta_file in ["compositor.json", "manifest.json"] {
         let _ = fs::remove_file(dest.join(meta_file));
     }
+    if let Some(splash) = splash {
+        sys::copy_tree(
+            splash,
+            &dest.join(".local/state/hecate/snapshots"),
+            MAX_IMAGE,
+            1,
+        )?;
+    }
     Ok(())
+}
+
+/// The user's splash pictures, if the directory is really theirs.
+pub fn splash_dir(user: &Passwd) -> Option<PathBuf> {
+    let dir = export_dir(&user.name).join("splash");
+    sys::is_owned_dir(&dir, user.uid).then_some(dir)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -423,6 +440,21 @@ mod tests {
             out,
             json!({ "outputs": { "DP-1": { "mode": "1920x1080@60" } }, "keyboard": { "layout": "hu" } })
         );
+    }
+
+    #[test]
+    fn copies_splash_pictures_but_not_links() {
+        let tmp = std::env::temp_dir().join(format!("hg-splash-{}", std::process::id()));
+        let (snap, splash, dest) = (tmp.join("snap"), tmp.join("splash"), tmp.join("dest"));
+        fs::create_dir_all(&snap).unwrap();
+        fs::create_dir_all(&splash).unwrap();
+        fs::write(splash.join("DP-1.png"), b"png").unwrap();
+        symlink("/etc/shadow", splash.join("DP-2.png")).unwrap();
+        copy_home(&snap, Some(&splash), &dest).unwrap();
+        let pictures = dest.join(".local/state/hecate/snapshots");
+        assert_eq!(fs::read(pictures.join("DP-1.png")).unwrap(), b"png");
+        assert!(fs::symlink_metadata(pictures.join("DP-2.png")).is_err());
+        fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]
