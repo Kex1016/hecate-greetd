@@ -159,6 +159,17 @@ in
       '';
     };
 
+    hideConsole = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Keep the text console off tty1, where greetd runs. greetd switches the terminal to text
+        mode before starting a session, and the console would flash up between the login
+        screen and the session. Boot messages, `boot.shell_on_fail` and the emergency shell go
+        to tty2 instead (Ctrl+Alt+F2); tty2 and up keep their consoles.
+      '';
+    };
+
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = with pkgs; [
@@ -212,6 +223,11 @@ in
         exec sleep infinity
       '';
     };
+
+    boot.kernelParams = lib.mkIf cfg.hideConsole [
+      "fbcon=vc:2-63"
+      "console=tty2"
+    ];
 
     users.users.greeter = {
       home = "/var/lib/hecate-greetd/greeter";

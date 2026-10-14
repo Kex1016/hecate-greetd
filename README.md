@@ -48,7 +48,10 @@ Between the login screen and the session, the screen doesn't go dark: hecate lea
 frame up when it exits and starts without turning outputs off, and the NixOS module's
 `hecate-greetd-hold-gpu` service keeps the GPU open in between, so the kernel doesn't put the
 text console back. The login screen's last frame (your desktop picture) stays until the
-session's first frame, the same picture, replaces it.
+session's first frame, the same picture, replaces it. greetd itself switches tty1 to text mode
+before each session, so `services.hecate-greetd.hideConsole` (on by default) keeps the console
+off tty1 (`fbcon=vc:2-63`); boot messages and the emergency shell go to tty2 (`console=tty2`,
+Ctrl+Alt+F2).
 
 The greeter treats an export as untrusted: it checks the owner, never follows symlinks, caps
 sizes, takes only those compositor tables (no autostart, binds or environment), validates them
