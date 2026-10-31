@@ -64,6 +64,11 @@ Item {
         id: chip
         implicitHeight: 40
         implicitWidth: chipRow.implicitWidth + 8
+        // Not the Basic style's 6 px all round: the avatar is as tall as the chip, so any
+        // top padding pushes the row (and the text with it) down.
+        padding: 0
+        leftPadding: 4
+        rightPadding: 4
         buttonRadius: Appearance.rounding.full
         enabled: picker.canSwitch || picker.canChooseSession
         toggled: picker.menuOpen
@@ -228,6 +233,8 @@ Item {
         colBackgroundToggledHover: Appearance.colors.colSecondaryContainerHover
         colRippleToggled: Appearance.colors.colSecondaryContainerActive
 
+        topPadding: 0
+        bottomPadding: 0
         leftPadding: 8
         rightPadding: 10
         contentItem: RowLayout {
