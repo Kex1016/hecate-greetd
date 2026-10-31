@@ -115,7 +115,9 @@ fn write_user_compositor(runtime: &Path, user: Option<&str>) -> bool {
     }
     let candidate = runtime.join("ui/user.check.json");
     let mut checked = fragment.clone();
-    if sys::write_json(&candidate, &fragment, 0o600).is_ok() {
+    // Nothing to check in an empty fragment (no export, or one with no compositor tables).
+    let has_tables = fragment.as_object().is_some_and(|m| !m.is_empty());
+    if has_tables && sys::write_json(&candidate, &fragment, 0o600).is_ok() {
         let ok = Command::new(sys::hecate_bin())
             .arg("validate")
             .arg(&candidate)
