@@ -37,6 +37,8 @@ Scope {
     property bool ready: false
     // Toolbars and password field shown; false while appearing, logging in or switching.
     property bool shown: false
+    // The monitor whose surface takes the keyboard.
+    readonly property string keyboardScreen: Quickshell.screens[0]?.name ?? ""
     // Fading to black before another user's instance takes over.
     property bool leaving: false
     // Logged in: fading into the desktop picture before the session starts.

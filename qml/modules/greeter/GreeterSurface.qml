@@ -23,7 +23,11 @@ PanelWindow {
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.namespace: "hecate-greetd"
-    WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
+    // One surface takes the keyboard, as one session-lock surface would: hecate gives an
+    // exclusive layer surface the keyboard on every commit, so two of them (one per monitor)
+    // would pass it back and forth with each frame and lose keystrokes in between. What is
+    // typed shows on every monitor through the shared context.
+    WlrLayershell.keyboardFocus: surface.greeter.keyboardScreen === surface.modelData.name ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     anchors {
         top: true
         bottom: true
