@@ -37,6 +37,8 @@ Scope {
     property bool ready: false
     // Toolbars and password field shown; false while appearing, logging in or switching.
     property bool shown: false
+    // Shown once: what can wait for the first frame loads after it.
+    property bool revealed: false
     // The monitor whose surface takes the keyboard.
     readonly property string keyboardScreen: Quickshell.screens[0]?.name ?? ""
     // Fading to black before another user's instance takes over.
@@ -87,6 +89,7 @@ Scope {
         onTriggered: {
             GlobalStates.startupLockPending = false;
             root.shown = true;
+            root.revealed = true;
             greeterContext.begin();
         }
     }

@@ -58,7 +58,8 @@ PanelWindow {
     // from its first frame until its shell is up. None saved yet: the plain unlock.
     Image {
         anchors.fill: parent
-        source: `file://${Quickshell.env("XDG_STATE_HOME")}/hecate/snapshots/${surface.modelData.name}.png`
+        // Decoded in the background once the screen is up, not alongside its first frame.
+        source: surface.greeter.revealed ? `file://${Quickshell.env("XDG_STATE_HOME")}/hecate/snapshots/${surface.modelData.name}.png` : ""
         asynchronous: true
         cache: false
         opacity: surface.greeter.launching && status === Image.Ready ? 1 : 0
