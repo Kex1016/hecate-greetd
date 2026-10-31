@@ -26,6 +26,7 @@ pub fn die_with_parent() -> io::Result<()> {
 
 pub const SIGTERM: i32 = 15;
 pub const SIGKILL: i32 = 9;
+const ESRCH: i32 = 3;
 
 pub fn uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.
@@ -40,6 +41,16 @@ pub fn kill_group(pgid: u32, sig: i32) {
             kill(-(pgid as i32), sig);
         }
     }
+}
+
+/// Whether anything is left in a process group.
+pub fn group_alive(pgid: u32) -> bool {
+    if pgid == 0 || pgid > i32::MAX as u32 {
+        return false;
+    }
+    // SAFETY: signal 0 only checks; ESRCH means the group is gone.
+    let rc = unsafe { kill(-(pgid as i32), 0) };
+    rc == 0 || io::Error::last_os_error().raw_os_error() != Some(ESRCH)
 }
 
 pub fn env_or(key: &str, default: &str) -> String {

@@ -246,8 +246,13 @@ fn run_ui(run: &UiRun) -> io::Result<ExitStatus> {
     let mut child = cmd.spawn()?;
     let pgid = child.id();
     let status = child.wait();
+    // Whatever it started goes with it, but the handover to the session doesn't wait on
+    // stragglers that aren't there.
     sys::kill_group(pgid, sys::SIGTERM);
-    std::thread::sleep(Duration::from_millis(100));
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while sys::group_alive(pgid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     sys::kill_group(pgid, sys::SIGKILL);
     status
 }
