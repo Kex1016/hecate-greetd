@@ -31,8 +31,9 @@ greetd ── hecate-greetd session            (as the `greeter` user)
                  └─ autostart: hecate-greetd ui                          outputs/keyboard/...
                       └─ qs -p …/shell/greeter.qml   (HOME = a copy of the user's export)
                            exit 10: another user was picked → apply their layout, restart
-                           greetd has the session → `hecate msg exit` with the desktop
-                           picture still up; the UI goes down with the compositor
+                           greetd has the session → the supervisor remembers the login
+                           and runs `hecate msg exit` with the desktop picture still
+                           up; the UI goes down with the compositor
 ```
 
 The greeter can't read home directories, so the user's shell shares what it needs:
@@ -48,15 +49,16 @@ screen only uses them while the user shares their look.
 Between the login screen and the session, the screen doesn't go dark: hecate leaves its last
 frame up when it exits and starts without turning outputs off, and the NixOS module's
 `hecate-greetd-hold-gpu` service keeps the GPU open in between, so the kernel doesn't put the
-text console back. Once greetd has the session, the login screen tells hecate to exit while
-its desktop picture is still on screen (the UI goes down with the compositor; exiting the UI
-first would leave hecate's bare background as the last frame), so that picture stays until
-the session's first frame, the same picture, replaces it. After a logout it works the other
-way round: the greeter's hecate starts on the user's desktop pictures (`splash.enable` with
-`splash.save = false`, only once a session has run since boot) and fades them into the lock
-screen when it shows, instead of a dark frame while the UI loads. greetd itself switches tty1 to text mode
-before each session, so `services.hecate-greetd.hideConsole` (on by default) keeps the console
-off tty1 (`fbcon=vc:2-63`); boot messages and the emergency shell go to tty2 (`console=tty2`,
+text console back. Once greetd has the session, `hecate-greetd ui` remembers the login and
+tells hecate to exit while its desktop picture is still on screen (the UI goes down with the
+compositor; exiting the UI first would leave hecate's bare background as the last frame), so
+that picture stays until the session's first frame, the same picture, replaces it. After a
+logout it works the other way round: the greeter's hecate starts on the user's desktop
+pictures (`splash.enable` with `splash.save = false`, only once a session has run since boot)
+and fades them into the lock screen when it shows, instead of a dark frame while the UI
+loads. greetd itself switches tty1 to text mode before each session, so
+`services.hecate-greetd.hideConsole` (on by default) keeps the console off tty1
+(`fbcon=vc:2-63`); boot messages and the emergency shell go to tty2 (`console=tty2`,
 Ctrl+Alt+F2).
 
 The greeter treats an export as untrusted: it checks the owner, never follows symlinks, caps

@@ -65,6 +65,25 @@ fn save_state(state: &Value) {
     }
 }
 
+/// Remember the login's choice for next time, and that a session ran this boot.
+fn remember_login(state: &mut Value, ui: &Path) {
+    if let Some(result) = sys::read_json_limited(&ui.join("result.json"), 1 << 16)
+        && let Some(u) = result["user"].as_str()
+    {
+        state["last_user"] = json!(u);
+        if let Some(s) = result["session"].as_str() {
+            if !state["sessions"].is_object() {
+                state["sessions"] = json!({});
+            }
+            state["sessions"][u] = json!(s);
+        }
+    }
+    if let Some(boot) = boot_id() {
+        state["session_boot_id"] = json!(boot);
+    }
+    save_state(state);
+}
+
 /// Whether the hecate this runs in still answers on its socket.
 fn compositor_alive() -> bool {
     std::env::var_os("HECATE_SOCKET")
@@ -238,8 +257,9 @@ struct UiRun<'a> {
     preview: bool,
 }
 
-/// Prepare the user's home copy and run the UI once.
-fn run_ui(run: &UiRun) -> io::Result<ExitStatus> {
+/// Prepare the user's home copy and run the UI once. `on_launched` runs once, as soon as the
+/// UI has written `launched.json` (greetd has accepted the session), while the UI still runs.
+fn run_ui(run: &UiRun, mut on_launched: impl FnMut()) -> io::Result<ExitStatus> {
     let name = run.user.unwrap_or("nobody");
     let home = run.runtime.join(format!("home-{name}"));
     let passwd = run
@@ -296,7 +316,20 @@ fn run_ui(run: &UiRun) -> io::Result<ExitStatus> {
     }
     let mut child = cmd.spawn()?;
     let pgid = child.id();
-    let status = child.wait();
+    let launched = run.runtime.join("launched.json");
+    let mut seen_launch = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {}
+            Err(e) => break Err(e),
+        }
+        if !seen_launch && launched.is_file() {
+            seen_launch = true;
+            on_launched();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
     // Whatever it started goes with it, but the handover to the session doesn't wait on
     // stragglers that aren't there.
     sys::kill_group(pgid, sys::SIGTERM);
@@ -365,37 +398,40 @@ pub fn ui() -> io::Result<()> {
 
         let use_fallback = failures >= 3 && !fallback.is_empty();
         let started = Instant::now();
-        let status = run_ui(&UiRun {
-            qml: if use_fallback { &fallback } else { &qml },
-            runtime: &ui,
-            user: user.as_deref(),
-            preview: false,
-        });
+        let status = run_ui(
+            &UiRun {
+                qml: if use_fallback { &fallback } else { &qml },
+                runtime: &ui,
+                user: user.as_deref(),
+                preview: false,
+            },
+            || {
+                // greetd has the session and starts it once hecate is gone. Remember the
+                // login first: this process goes down with hecate too, or soon after.
+                remember_login(&mut state, &ui);
+                log(format!(
+                    "logging in after {:.1} s, telling hecate to exit",
+                    started.elapsed().as_secs_f64()
+                ));
+                if in_compositor {
+                    let _ = Command::new(sys::hecate_bin())
+                        .args(["msg", "exit"])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            },
+        );
         let code = status.as_ref().ok().and_then(ExitStatus::code);
-        // greetd has the session: the UI told hecate to exit with the desktop picture still
-        // up, and went down with it (any status), or exited 0 itself.
+        // A login: the UI went down with hecate (any status), or exited 0 itself.
         let launched = ui.join("launched.json").is_file();
         log(format!(
             "the login screen ended ({code:?}, launched: {launched}) after {:.1} s",
             started.elapsed().as_secs_f64()
         ));
         if code == Some(0) || launched {
-            // Remember the choice for next time, and that a session ran this boot.
-            if let Some(result) = sys::read_json_limited(&ui.join("result.json"), 1 << 16)
-                && let Some(u) = result["user"].as_str()
-            {
-                state["last_user"] = json!(u);
-                if let Some(s) = result["session"].as_str() {
-                    if !state["sessions"].is_object() {
-                        state["sessions"] = json!({});
-                    }
-                    state["sessions"][u] = json!(s);
-                }
-            }
-            if let Some(boot) = boot_id() {
-                state["session_boot_id"] = json!(boot);
-            }
-            save_state(&state);
+            remember_login(&mut state, &ui);
             break;
         }
         match code {
@@ -430,8 +466,8 @@ pub fn ui() -> io::Result<()> {
         }
     }
 
-    // Normally the UI has already done this and hecate is gone (the message fails at once);
-    // this is for a UI that exited 0 without, or whose message didn't get through.
+    // Normally done at the login and hecate is gone (the message fails at once); this is for
+    // a UI that exited 0 without logging in, or whose message didn't get through.
     if in_compositor {
         let _ = Command::new(sys::hecate_bin())
             .args(["msg", "exit"])
@@ -464,12 +500,15 @@ pub fn preview() -> io::Result<()> {
     if qml.is_empty() {
         return Err(io::Error::other("HECATE_GREETD_QML is not set"));
     }
-    run_ui(&UiRun {
-        qml: &qml,
-        runtime: &runtime,
-        user: Some(&me.name),
-        preview: true,
-    })?;
+    run_ui(
+        &UiRun {
+            qml: &qml,
+            runtime: &runtime,
+            user: Some(&me.name),
+            preview: true,
+        },
+        || {},
+    )?;
     Ok(())
 }
 

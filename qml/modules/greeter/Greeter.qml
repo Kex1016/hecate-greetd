@@ -152,7 +152,8 @@ Scope {
         preload: false
         printErrors: false
     }
-    // greetd has the session: the supervisor takes this instance going down as the login.
+    // greetd has the session: the supervisor sees this file, remembers the login and tells
+    // hecate to exit with the desktop picture still up; this instance goes down with it.
     FileView {
         id: launchedFile
         path: `${root.runtimeDir}/launched.json`
@@ -220,20 +221,19 @@ Scope {
         }
     }
 
-    // greetd accepted the session and waits for the greeter to exit. hecate exits on request
-    // and leaves its last frame, the desktop picture, on screen; this instance goes with it.
+    // greetd accepted the session and waits for the greeter to exit. The supervisor asks
+    // hecate to, and it leaves its last frame, the desktop picture, on screen; this instance
+    // goes with it. Outside hecate (or when nothing asked it within a moment) exit as before.
     function handOver() {
         if (!root.inCompositor) {
             Qt.exit(0);
             return;
         }
-        Quickshell.execDetached([root.hecateBin, "msg", "exit"]);
         exitTimer.start();
     }
 
     Timer {
         id: exitTimer
-        // hecate didn't take the request: exit as before, and the supervisor tells it.
         interval: 2000
         onTriggered: Qt.exit(0)
     }
