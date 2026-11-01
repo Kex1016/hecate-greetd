@@ -207,6 +207,12 @@ in
     # open, and the kernel would put the text console back on screen. Holding it open keeps
     # the login screen's last frame up (hecate leaves it there) until the session's first
     # frame, the same picture, replaces it.
+    #
+    # Through the render node: the kernel counts it as an open of the device (no console
+    # restore while it's held), but a render node can never be DRM master. The first open of
+    # a card node *becomes* master when there is none, and this starts early in the boot:
+    # holding the card node before plymouth opened it left plymouth without the screen and
+    # its quit hanging, and greetd, ordered after it, never started.
     systemd.services.hecate-greetd-hold-gpu = {
       description = "Keep the GPU open between the login screen and the session";
       wantedBy = [ "greetd.service" ];
@@ -215,13 +221,13 @@ in
         # The GPU's driver may load after this starts; the login screen takes longer anyway.
         # (A plain glob test: the unit's bash has no programmable completion, so no compgen.)
         for _ in $(seq 60); do
-          set -- /dev/dri/card*
+          set -- /dev/dri/renderD*
           [ -e "$1" ] && break
           sleep 1
         done
-        for card in /dev/dri/card*; do
-          [ -e "$card" ] || continue
-          exec {fd}<"$card"
+        for node in /dev/dri/renderD*; do
+          [ -e "$node" ] || continue
+          exec {fd}<"$node"
         done
         exec sleep infinity
       '';
