@@ -27,6 +27,7 @@ const EXIT_SWITCH_USER: i32 = 10;
 
 fn log(msg: impl AsRef<str>) {
     eprintln!("hecate-greetd: {}", msg.as_ref());
+    sys::journal(msg.as_ref());
 }
 
 /// Where the UI and the supervisor talk (users, sessions, the choice, the result), and the
@@ -204,6 +205,11 @@ pub fn session(extra_args: &[String]) -> io::Result<()> {
     let config = runtime.join("config.json");
     sys::write_json(&config, &json!({ "include": [base, "user.json"] }), 0o600)?;
 
+    log(format!(
+        "starting hecate for the login screen (user {}, splash {})",
+        user.as_deref().unwrap_or("-"),
+        after_session(&state)
+    ));
     let mut cmd = Command::new(sys::hecate_bin());
     cmd.arg("--config").arg(&config).args(extra_args);
     cmd.env("HECATE_GREETD_RUNTIME", &runtime)
@@ -369,6 +375,10 @@ pub fn ui() -> io::Result<()> {
         // greetd has the session: the UI told hecate to exit with the desktop picture still
         // up, and went down with it (any status), or exited 0 itself.
         let launched = ui.join("launched.json").is_file();
+        log(format!(
+            "the login screen ended ({code:?}, launched: {launched}) after {:.1} s",
+            started.elapsed().as_secs_f64()
+        ));
         if code == Some(0) || launched {
             // Remember the choice for next time, and that a session ran this boot.
             if let Some(result) = sys::read_json_limited(&ui.join("result.json"), 1 << 16)

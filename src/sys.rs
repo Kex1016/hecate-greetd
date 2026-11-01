@@ -53,6 +53,26 @@ pub fn group_alive(pgid: u32) -> bool {
     rc == 0 || io::Error::last_os_error().raw_os_error() != Some(ESRCH)
 }
 
+/// A line to the systemd journal (`journalctl -t hecate-greetd`), where it can be read back:
+/// under greetd, stderr is the VT nobody sees, and the UI's supervisor runs with stderr
+/// closed. Nothing happens without a journal.
+pub fn journal(msg: &str) {
+    let Ok(sock) = std::os::unix::net::UnixDatagram::unbound() else {
+        return;
+    };
+    let mut payload = b"SYSLOG_IDENTIFIER=hecate-greetd\nPRIORITY=6\n".to_vec();
+    // A message with newlines goes as a length-prefixed field (journal native protocol).
+    if msg.contains('\n') {
+        payload.extend_from_slice(b"MESSAGE\n");
+        payload.extend_from_slice(&(msg.len() as u64).to_le_bytes());
+        payload.extend_from_slice(msg.as_bytes());
+        payload.push(b'\n');
+    } else {
+        payload.extend_from_slice(format!("MESSAGE={msg}\n").as_bytes());
+    }
+    let _ = sock.send_to(&payload, "/run/systemd/journal/socket");
+}
+
 pub fn env_or(key: &str, default: &str) -> String {
     std::env::var(key)
         .ok()
