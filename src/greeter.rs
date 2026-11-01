@@ -5,7 +5,9 @@
 //! settings of whoever is selected (monitor layout, keyboard, ...). hecate autostarts
 //! `hecate-greetd ui`, which runs the shell's lock screen (QuickShell, `greeter.qml`) with that
 //! user's look and restarts it when another user is picked. When greetd has a session to start
-//! the UI exits 0 and hecate is told to quit.
+//! the UI writes `launched.json` and tells hecate to quit itself, while its surfaces (the
+//! user's desktop picture) are still up: hecate leaves that frame on screen, and the session's
+//! first frame, the same picture, replaces it. The UI goes with the compositor.
 
 use std::fs;
 use std::io;
@@ -60,6 +62,12 @@ fn save_state(state: &Value) {
     {
         log(format!("saving {}: {e}", path.display()));
     }
+}
+
+/// Whether the hecate this runs in still answers on its socket.
+fn compositor_alive() -> bool {
+    std::env::var_os("HECATE_SOCKET")
+        .is_some_and(|path| std::os::unix::net::UnixStream::connect(path).is_ok())
 }
 
 fn pick_user(users: &[User], runtime: &Path, state: &Value) -> Option<String> {
@@ -221,8 +229,9 @@ fn run_ui(run: &UiRun) -> io::Result<ExitStatus> {
     ] {
         fs::create_dir_all(home.join(d))?;
     }
-    let _ = fs::remove_file(run.runtime.join("request.json"));
-    let _ = fs::remove_file(run.runtime.join("result.json"));
+    for stale in ["request.json", "result.json", "launched.json"] {
+        let _ = fs::remove_file(run.runtime.join(stale));
+    }
 
     let mut cmd = Command::new(sys::qs_bin());
     cmd.arg("-p").arg(run.qml);
@@ -322,23 +331,27 @@ pub fn ui() -> io::Result<()> {
             user: user.as_deref(),
             preview: false,
         });
-        match status.as_ref().ok().and_then(ExitStatus::code) {
-            Some(0) => {
-                // greetd has the session; remember the choice for next time.
-                if let Some(result) = sys::read_json_limited(&ui.join("result.json"), 1 << 16) {
-                    if let Some(u) = result["user"].as_str() {
-                        state["last_user"] = json!(u);
-                        if let Some(s) = result["session"].as_str() {
-                            if !state["sessions"].is_object() {
-                                state["sessions"] = json!({});
-                            }
-                            state["sessions"][u] = json!(s);
-                        }
+        let code = status.as_ref().ok().and_then(ExitStatus::code);
+        // greetd has the session: the UI told hecate to exit with the desktop picture still
+        // up, and went down with it (any status), or exited 0 itself.
+        let launched = ui.join("launched.json").is_file();
+        if code == Some(0) || launched {
+            // Remember the choice for next time.
+            if let Some(result) = sys::read_json_limited(&ui.join("result.json"), 1 << 16)
+                && let Some(u) = result["user"].as_str()
+            {
+                state["last_user"] = json!(u);
+                if let Some(s) = result["session"].as_str() {
+                    if !state["sessions"].is_object() {
+                        state["sessions"] = json!({});
                     }
-                    save_state(&state);
+                    state["sessions"][u] = json!(s);
                 }
-                break;
             }
+            save_state(&state);
+            break;
+        }
+        match code {
             Some(EXIT_SWITCH_USER) => {
                 failures = 0;
                 let req = sys::read_json_limited(&ui.join("request.json"), 1 << 16);
@@ -347,6 +360,12 @@ pub fn ui() -> io::Result<()> {
                 }
             }
             other => {
+                if in_compositor && !compositor_alive() {
+                    // Gone under us (it exits on the UI's request at login, but then
+                    // `launched.json` says so): nothing left to show anything on.
+                    log("the compositor is gone, stopping");
+                    return Ok(());
+                }
                 log(format!(
                     "the login screen exited ({other:?}, {:?})",
                     status.err()
@@ -364,11 +383,14 @@ pub fn ui() -> io::Result<()> {
         }
     }
 
+    // Normally the UI has already done this and hecate is gone (the message fails at once);
+    // this is for a UI that exited 0 without, or whose message didn't get through.
     if in_compositor {
         let _ = Command::new(sys::hecate_bin())
             .args(["msg", "exit"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status();
     }
     Ok(())

@@ -18,7 +18,9 @@ import qs.modules.ii.background
  * layout. Picking another user exits with code 10 and the supervisor starts a fresh instance
  * for them; logging in plays the unlock animation, fades into the user's desktop as hecate
  * last saved it (its login splash, which the session shows until its shell is up), then hands
- * the session to greetd.
+ * the session to greetd. Once greetd has it, this instance tells hecate to exit while the
+ * desktop picture is still up, so that is the frame hecate leaves on screen for the session
+ * (exiting first would leave hecate's bare background there).
  */
 Scope {
     id: root
@@ -26,6 +28,9 @@ Scope {
     readonly property string runtimeDir: Quickshell.env("HECATE_GREETD_RUNTIME") ?? ""
     readonly property bool preview: (Quickshell.env("HECATE_GREETD_PREVIEW") ?? "") === "1"
     readonly property string user: Quickshell.env("HECATE_GREETD_USER") ?? ""
+    // Running inside the greeter's own hecate (not a preview in a session).
+    readonly property bool inCompositor: !root.preview && (Quickshell.env("HECATE_SOCKET") ?? "") !== ""
+    readonly property string hecateBin: Quickshell.env("HECATE_GREETD_HECATE") ?? "hecate"
 
     property var users: []
     property var sessions: []
@@ -134,6 +139,15 @@ Scope {
         preload: false
         printErrors: false
     }
+    // greetd has the session: the supervisor takes this instance going down as the login.
+    FileView {
+        id: launchedFile
+        path: `${root.runtimeDir}/launched.json`
+        preload: false
+        printErrors: false
+        onSaved: root.handOver()
+        onSaveFailed: root.handOver()
+    }
 
     // ------------------------------------------------------------------ actions
 
@@ -188,8 +202,27 @@ Scope {
             const s = root.currentSession;
             const env = [`XDG_SESSION_TYPE=wayland`, `XDG_SESSION_DESKTOP=${s.id}`];
             if (s.desktopNames.length > 0) env.push(`XDG_CURRENT_DESKTOP=${s.desktopNames.join(":")}`);
-            Greetd.launch(s.exec, env, true);
+            // Not quitting on launch: hecate goes first (handOver), with the picture still up.
+            Greetd.launch(s.exec, env, false);
         }
+    }
+
+    // greetd accepted the session and waits for the greeter to exit. hecate exits on request
+    // and leaves its last frame, the desktop picture, on screen; this instance goes with it.
+    function handOver() {
+        if (!root.inCompositor) {
+            Qt.exit(0);
+            return;
+        }
+        Quickshell.execDetached([root.hecateBin, "msg", "exit"]);
+        exitTimer.start();
+    }
+
+    Timer {
+        id: exitTimer
+        // hecate didn't take the request: exit as before, and the supervisor tells it.
+        interval: 2000
+        onTriggered: Qt.exit(0)
     }
 
     GreeterContext {
@@ -211,6 +244,9 @@ Scope {
     Connections {
         target: Greetd
         enabled: !root.preview && Greetd.available
+        function onLaunched() {
+            launchedFile.setText(JSON.stringify({ user: root.user, session: root.session }));
+        }
         function onError(error) {
             // A launch greetd refused: come back so the user can try again.
             if (launchTimer.running || handoffTimer.running || !GlobalStates.screenLocked) {
