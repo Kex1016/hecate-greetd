@@ -20,7 +20,8 @@ import qs.modules.ii.background
  * last saved it (its login splash, which the session shows until its shell is up), then hands
  * the session to greetd. Once greetd has it, this instance tells hecate to exit while the
  * desktop picture is still up, so that is the frame hecate leaves on screen for the session
- * (exiting first would leave hecate's bare background there).
+ * (exiting first would leave hecate's bare background there). After a logout hecate starts
+ * on those pictures too, and `splash-done` fades them into the lock screen once it shows.
  */
 Scope {
     id: root
@@ -96,6 +97,18 @@ Scope {
             root.shown = true;
             root.revealed = true;
             greeterContext.begin();
+            splashDoneTimer.start();
+        }
+    }
+
+    // After a logout hecate shows the user's desktop pictures from its first frame (the
+    // supervisor turns its splash on); fade them out once the lock screen's first frames
+    // are up, as the shell does in a session.
+    Timer {
+        id: splashDoneTimer
+        interval: 300
+        onTriggered: {
+            if (root.inCompositor) Quickshell.execDetached([root.hecateBin, "msg", "action", "splash-done"]);
         }
     }
 

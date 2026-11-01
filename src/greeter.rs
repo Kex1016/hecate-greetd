@@ -70,6 +70,23 @@ fn compositor_alive() -> bool {
         .is_some_and(|path| std::os::unix::net::UnixStream::connect(path).is_ok())
 }
 
+fn boot_id() -> Option<String> {
+    fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Whether a session was started from this login screen since boot: then the one that just
+/// ended left its desktop on screen, and the login screen starts from the user's desktop
+/// pictures (hecate's splash) instead of a dark frame while its UI loads. After a boot the
+/// screen comes from the boot splash, where a picture of a desktop would be out of place.
+fn after_session(state: &Value) -> bool {
+    state["session_boot_id"]
+        .as_str()
+        .is_some_and(|b| Some(b) == boot_id().as_deref())
+}
+
 fn pick_user(users: &[User], runtime: &Path, state: &Value) -> Option<String> {
     let known = |n: &str| users.iter().any(|u| u.name == n);
     let requested = fs::read_to_string(runtime.join("next-user")).ok();
@@ -108,12 +125,28 @@ fn pick_session(sessions: &[sessions::Session], user: &str, state: &Value) -> Op
 
 /// The selected user's compositor settings, checked by `hecate validate` before hecate
 /// sees them. Returns whether `user.json` changed.
-fn write_user_compositor(runtime: &Path, user: Option<&str>) -> bool {
-    let fragment = user
-        .and_then(|name| sys::read_passwd().into_iter().find(|p| p.name == name))
-        .and_then(|p| export::snapshot(&p))
-        .map(|snap| export::compositor_fragment(&snap))
+///
+/// After a session (`after_session`), their splash pictures too, shown from the greeter's
+/// first frame and never written (`splash.save = false`): the user's directory isn't the
+/// greeter's to write, and the session's pictures are the ones the login screen fades into.
+fn write_user_compositor(runtime: &Path, user: Option<&str>, state: &Value) -> bool {
+    let passwd = user.and_then(|name| sys::read_passwd().into_iter().find(|p| p.name == name));
+    let snap = passwd.as_ref().and_then(export::snapshot);
+    let mut fragment = snap
+        .as_ref()
+        .map(|snap| export::compositor_fragment(snap))
         .unwrap_or_else(|| json!({}));
+    // Only while they share their look, like the pictures the UI fades into.
+    if after_session(state)
+        && snap.is_some()
+        && let Some(splash) = passwd.as_ref().and_then(export::splash_dir)
+        && let Some(map) = fragment.as_object_mut()
+    {
+        map.insert(
+            "splash".into(),
+            json!({ "enable": true, "dir": splash, "save": false }),
+        );
+    }
     let path = runtime.join("user.json");
     let old = fs::read(&path)
         .ok()
@@ -161,8 +194,9 @@ pub fn session(extra_args: &[String]) -> io::Result<()> {
     // Start with the layout of whoever the login screen opens on.
     let users = sessions::users();
     let ui = ui_dir(&runtime)?;
-    let user = pick_user(&users, &ui, &load_state());
-    write_user_compositor(&runtime, user.as_deref());
+    let state = load_state();
+    let user = pick_user(&users, &ui, &state);
+    write_user_compositor(&runtime, user.as_deref(), &state);
     if let Some(u) = &user {
         fs::write(ui.join("next-user"), u)?;
     }
@@ -314,7 +348,7 @@ pub fn ui() -> io::Result<()> {
             0o600,
         )?;
 
-        if write_user_compositor(&runtime, user.as_deref()) && in_compositor {
+        if write_user_compositor(&runtime, user.as_deref(), &state) && in_compositor {
             // Apply the layout before the UI maps its surfaces.
             let _ = Command::new(sys::hecate_bin())
                 .args(["msg", "reload"])
@@ -336,7 +370,7 @@ pub fn ui() -> io::Result<()> {
         // up, and went down with it (any status), or exited 0 itself.
         let launched = ui.join("launched.json").is_file();
         if code == Some(0) || launched {
-            // Remember the choice for next time.
+            // Remember the choice for next time, and that a session ran this boot.
             if let Some(result) = sys::read_json_limited(&ui.join("result.json"), 1 << 16)
                 && let Some(u) = result["user"].as_str()
             {
@@ -347,6 +381,9 @@ pub fn ui() -> io::Result<()> {
                     }
                     state["sessions"][u] = json!(s);
                 }
+            }
+            if let Some(boot) = boot_id() {
+                state["session_boot_id"] = json!(boot);
             }
             save_state(&state);
             break;
@@ -424,4 +461,20 @@ pub fn preview() -> io::Result<()> {
         preview: true,
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splash_only_after_a_session_this_boot() {
+        assert!(!after_session(&json!({})));
+        assert!(!after_session(
+            &json!({ "session_boot_id": "not this boot" })
+        ));
+        if let Some(boot) = boot_id() {
+            assert!(after_session(&json!({ "session_boot_id": boot })));
+        }
+    }
 }

@@ -51,7 +51,10 @@ frame up when it exits and starts without turning outputs off, and the NixOS mod
 text console back. Once greetd has the session, the login screen tells hecate to exit while
 its desktop picture is still on screen (the UI goes down with the compositor; exiting the UI
 first would leave hecate's bare background as the last frame), so that picture stays until
-the session's first frame, the same picture, replaces it. greetd itself switches tty1 to text mode
+the session's first frame, the same picture, replaces it. After a logout it works the other
+way round: the greeter's hecate starts on the user's desktop pictures (`splash.enable` with
+`splash.save = false`, only once a session has run since boot) and fades them into the lock
+screen when it shows, instead of a dark frame while the UI loads. greetd itself switches tty1 to text mode
 before each session, so `services.hecate-greetd.hideConsole` (on by default) keeps the console
 off tty1 (`fbcon=vc:2-63`); boot messages and the emergency shell go to tty2 (`console=tty2`,
 Ctrl+Alt+F2).
