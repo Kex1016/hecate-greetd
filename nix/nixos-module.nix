@@ -213,11 +213,14 @@ in
       partOf = [ "greetd.service" ];
       script = ''
         # The GPU's driver may load after this starts; the login screen takes longer anyway.
+        # (A plain glob test: the unit's bash has no programmable completion, so no compgen.)
         for _ in $(seq 60); do
-          compgen -G '/dev/dri/card*' >/dev/null && break
+          set -- /dev/dri/card*
+          [ -e "$1" ] && break
           sleep 1
         done
         for card in /dev/dri/card*; do
+          [ -e "$card" ] || continue
           exec {fd}<"$card"
         done
         exec sleep infinity
