@@ -64,7 +64,7 @@ stdenvNoCC.mkDerivation {
   passthru.unwrapped = bin;
 
   meta = {
-    description = "greetd greeter for hecate: the shell's lock screen with the look of whoever logs in";
+    description = "greetd greeter for hecate: the haiiro login screen over hecate's blob background";
     homepage = "https://github.com/Kex1016/hecate-greetd";
     license = lib.licenses.gpl3Plus;
     mainProgram = "hecate-greetd";
