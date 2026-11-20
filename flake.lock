@@ -23,18 +23,17 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1793810498,
-        "narHash": "sha256-uO7tbBoVwuw5Nv4YzoAVVvbIzt6Niv0+cKnLY52I1do=",
-        "ref": "refs/heads/master",
-        "rev": "d5f7086ca47f6dac03d8f5729be2e7b019ea039e",
-        "shallow": true,
-        "type": "git",
-        "url": "https://github.com/Kex1016/hecate"
+        "lastModified": 1795183199,
+        "narHash": "sha256-pnXt9jqeYM0GNdvVoOOi4toPH9xIe8e2CjxHHKJLg2Q=",
+        "owner": "Kex1016",
+        "repo": "hecate",
+        "rev": "d6f395f947c48bbf84811702d733df5ff320c123",
+        "type": "github"
       },
       "original": {
-        "shallow": true,
-        "type": "git",
-        "url": "https://github.com/Kex1016/hecate"
+        "owner": "Kex1016",
+        "repo": "hecate",
+        "type": "github"
       }
     },
     "home-manager": {
