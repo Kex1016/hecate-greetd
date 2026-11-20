@@ -4,121 +4,103 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.Greetd
 import qs
-import qs.services
 import qs.modules.common
-import qs.modules.common.functions
-import qs.modules.common.panels.lock
-import qs.modules.ii.background
+import qs.modules.common.widgets.haiiro as H
 
 /**
- * The login screen: the shell's lock screen, locked from the start, for one user at a time.
+ * The login screen.
  *
- * `hecate-greetd ui` starts this with HOME pointing at a copy of the selected user's export, so
- * Config, the colours and the wallpaper layer are theirs, and hecate already has their monitor
- * layout. Picking another user exits with code 10 and the supervisor starts a fresh instance
- * for them; logging in plays the unlock animation, fades into the user's desktop as hecate
- * last saved it (its login splash, which the session shows until its shell is up), then hands
- * the session to greetd. Once greetd has it, this instance tells hecate to exit while the
- * desktop picture is still up, so that is the frame hecate leaves on screen for the session
- * (exiting first would leave hecate's bare background there). After a logout hecate starts
- * on those pictures too, and `splash-done` fades them into the lock screen once it shows.
+ * It draws no background. hecate's blobs run behind it for every user, under the checker
+ * veil, and the rest is the haiiro kit: the host, the clock, one login window and a strip
+ * along the bottom. `hecate-greetd ui` starts it and hands it who can log in and into what;
+ * picking another user writes `request.json`, and the supervisor gives hecate that user's
+ * keyboard and monitor layout while this keeps running.
+ *
+ * Logging in pixelates everything away and lifts the veil, so the blobs alone are left, then
+ * hands the session to greetd. Once greetd has it the supervisor tells hecate to exit: hecate
+ * leaves that frame on screen and writes down where its blobs were, and the session's hecate
+ * carries on from there with its first frame.
  */
 Scope {
     id: root
 
     readonly property string runtimeDir: Quickshell.env("HECATE_GREETD_RUNTIME") ?? ""
     readonly property bool preview: (Quickshell.env("HECATE_GREETD_PREVIEW") ?? "") === "1"
-    readonly property string user: Quickshell.env("HECATE_GREETD_USER") ?? ""
     // Running inside the greeter's own hecate (not a preview in a session).
     readonly property bool inCompositor: !root.preview && (Quickshell.env("HECATE_SOCKET") ?? "") !== ""
-    readonly property string hecateBin: Quickshell.env("HECATE_GREETD_HECATE") ?? "hecate"
 
     property var users: []
     property var sessions: []
+    property string user: Quickshell.env("HECATE_GREETD_USER") ?? ""
     property string session: ""
+    // The session each user logged into last.
+    property var lastSessions: ({})
     readonly property var currentUser: root.users.find(u => u.name === root.user) ?? null
     readonly property var currentSession: root.sessions.find(s => s.id === root.session) ?? null
 
-    // The shell's config is loaded and the greeter's own options applied.
+    // The system's name as os-release has it ("CakeOS"), without the version.
+    property string distro: ""
+
+    // The shell's config is loaded: the clock has its format.
     property bool ready: false
-    // Toolbars and password field shown; false while appearing, logging in or switching.
+    // The parts are on screen; false while appearing and once a login goes through.
     property bool shown: false
-    // Shown once: what can wait for the first frame loads after it.
-    property bool revealed: false
+    // The checker over the blobs. Lifted before the session starts, so the last frame is
+    // the blobs alone.
+    property bool veiled: false
+    // Logged in: on the way out.
+    property bool launching: false
     // The monitor whose surface takes the keyboard.
     readonly property string keyboardScreen: Quickshell.screens[0]?.name ?? ""
-    // Fading to black before another user's instance takes over.
-    property bool leaving: false
-    // Logged in: fading into the desktop picture before the session starts.
-    property bool launching: false
+    // Host, clock, window, strip: each pixelates one stagger after the one before.
+    readonly property int parts: 4
+    readonly property int leaveMs: H.HTokens.cut ? 0 : H.HTokens.pixelateDuration + (root.parts - 1) * H.HTokens.pixelateStagger
 
     Component.onCompleted: {
         GlobalStates.greeterMode = true;
-        GlobalStates.screenLocked = true;
-        // A private copy, but nothing here should change the user's settings anyway.
+        // Nothing here should write a setting.
         Config.blockWrites = true;
-        if (Config.ready) root.applyOptions();
+        if (Config.ready) root.reveal();
     }
 
     Connections {
         target: Config
         function onReadyChanged() {
-            if (Config.ready) root.applyOptions();
+            if (Config.ready) root.reveal();
         }
     }
 
-    // The greeter's settings (Settings → hecate-greetd) on top of the lock screen's.
-    function applyOptions() {
+    // A config that never loads doesn't keep anyone out.
+    Timer {
+        interval: 3000
+        running: !root.ready
+        onTriggered: root.reveal()
+    }
+
+    function reveal() {
         if (root.ready) return;
-        const g = Config.options.greeter;
-        const bg = Config.options.background;
-        const lock = Config.options.lock;
-        if (g.style === "centered") {
-            bg.centeredWallpaper = true;
-        } else if (g.style === "blurred") {
-            bg.centeredWallpaper = false;
-            lock.blur.enable = true;
-        }
-        if (g.wallpaper !== "") bg.lockWall = g.wallpaper;
-        lock.showLockedText = g.showStatusText;
-        lock.showToolbars = g.showToolbars;
-        GlobalStates.lockStatusText = g.statusText;
-        MaterialThemeLoader.reapplyTheme();
         root.ready = true;
-        // Let the wallpaper layer settle on the new options, then fade everything in.
-        revealTimer.start();
-    }
-
-    Timer {
-        id: revealTimer
-        interval: 50
-        onTriggered: {
-            GlobalStates.startupLockPending = false;
-            root.shown = true;
-            root.revealed = true;
-            greeterContext.begin();
-            splashDoneTimer.start();
-        }
-    }
-
-    // After a logout hecate shows the user's desktop pictures from its first frame (the
-    // supervisor turns its splash on); fade them out once the lock screen's first frames
-    // are up, as the shell does in a session.
-    Timer {
-        id: splashDoneTimer
-        interval: 300
-        onTriggered: {
-            if (root.inCompositor) Quickshell.execDetached([root.hecateBin, "msg", "action", "splash-done"]);
-        }
+        root.veiled = true;
+        root.shown = true;
+        greeterContext.begin();
     }
 
     // ------------------------------------------------------------------ choices from the supervisor
 
     FileView {
+        path: "/etc/os-release"
+        printErrors: false
+        onLoaded: {
+            const name = text().match(/^NAME=(.*)$/m);
+            root.distro = name ? name[1].trim().replace(/^["']|["']$/g, "") : "";
+        }
+    }
+    FileView {
         path: `${root.runtimeDir}/users.json`
         printErrors: false
         onLoaded: {
             try { root.users = JSON.parse(text()); } catch (e) { root.users = []; }
+            if (root.user === "" && root.users.length > 0) root.user = root.users[0].name;
         }
     }
     FileView {
@@ -134,6 +116,7 @@ Scope {
         onLoaded: {
             try {
                 const sel = JSON.parse(text());
+                root.lastSessions = sel.sessions ?? {};
                 if (root.session === "") root.session = sel.session ?? "";
             } catch (e) {}
         }
@@ -143,8 +126,6 @@ Scope {
         path: `${root.runtimeDir}/request.json`
         preload: false
         printErrors: false
-        onSaved: switchTimer.start()
-        onSaveFailed: switchTimer.start()
     }
     FileView {
         id: resultFile
@@ -153,7 +134,7 @@ Scope {
         printErrors: false
     }
     // greetd has the session: the supervisor sees this file, remembers the login and tells
-    // hecate to exit with the desktop picture still up; this instance goes down with it.
+    // hecate to exit with the blobs alone on screen; this instance goes down with it.
     FileView {
         id: launchedFile
         path: `${root.runtimeDir}/launched.json`
@@ -165,65 +146,75 @@ Scope {
 
     // ------------------------------------------------------------------ actions
 
+    property int requests: 0
+
     function switchUser(name) {
-        if (name === root.user || root.leaving || root.preview) return;
-        greeterContext.end();
-        root.shown = false;
-        root.leaving = true;
-        requestFile.setText(JSON.stringify({ user: name }));
+        if (name === root.user || root.launching || root.preview) return;
+        if (!root.users.some(u => u.name === name)) return;
+        root.user = name;
+        const last = root.lastSessions[name] ?? "";
+        if (root.sessions.some(s => s.id === last)) root.session = last;
+        // The supervisor gives hecate this user's keyboard and monitors.
+        root.requests += 1;
+        requestFile.setText(JSON.stringify({ user: name, seq: root.requests }));
     }
 
-    Timer {
-        id: switchTimer
-        // The fade to black
-        interval: 320
-        onTriggered: Qt.exit(10)
+    function cycleUser(step) {
+        const n = root.users.length;
+        if (n < 2) return;
+        const i = Math.max(0, root.users.findIndex(u => u.name === root.user));
+        root.switchUser(root.users[(i + step + n) % n].name);
+    }
+
+    function cycleSession(step) {
+        const n = root.sessions.length;
+        if (n < 2 || root.launching) return;
+        const i = Math.max(0, root.sessions.findIndex(s => s.id === root.session));
+        root.session = root.sessions[(i + step + n) % n].id;
     }
 
     function login() {
-        if (!root.preview && Greetd.available && !root.currentSession) {
-            greeterContext.fail(Translation.tr("No session to start"));
-            greeterContext.end();
+        if (greeterContext.live && !root.currentSession) {
+            greeterContext.fail("There is no session to start.");
             greeterContext.begin();
             return;
         }
         resultFile.setText(JSON.stringify({ user: root.user, session: root.session }));
-        // The lock screen's unlock: toolbars fade, the wallpaper comes out of its shape or blur.
+        root.launching = true;
         root.shown = false;
-        GlobalStates.screenLocked = false;
-        launchTimer.start();
+        leaveTimer.start();
     }
 
     Timer {
-        id: launchTimer
-        // As long as the centered wallpaper's grow (800 ms), which outlasts the blur's zoom.
-        interval: 850
+        id: leaveTimer
+        // Every part has pixelated out.
+        interval: root.leaveMs
         onTriggered: {
-            root.launching = true;
-            handoffTimer.start();
+            root.veiled = false;
+            launchTimer.start();
         }
     }
 
     Timer {
-        id: handoffTimer
-        // The desktop picture's fade (GreeterSurface).
-        interval: 320
+        id: launchTimer
+        // A few frames of the blobs alone, so that is what hecate has on screen when it goes.
+        interval: 100
         onTriggered: {
-            if (root.preview || !Greetd.available) {
+            if (!greeterContext.live) {
                 Qt.exit(0);
                 return;
             }
             const s = root.currentSession;
             const env = [`XDG_SESSION_TYPE=wayland`, `XDG_SESSION_DESKTOP=${s.id}`];
             if (s.desktopNames.length > 0) env.push(`XDG_CURRENT_DESKTOP=${s.desktopNames.join(":")}`);
-            // Not quitting on launch: hecate goes first (handOver), with the picture still up.
+            // Not quitting on launch: hecate goes first (handOver), this goes with it.
             Greetd.launch(s.exec, env, false);
         }
     }
 
     // greetd accepted the session and waits for the greeter to exit. The supervisor asks
-    // hecate to, and it leaves its last frame, the desktop picture, on screen; this instance
-    // goes with it. Outside hecate (or when nothing asked it within a moment) exit as before.
+    // hecate to, and this instance goes with it. Outside hecate, or when nothing asked it
+    // within a moment, exit as any greeter would.
     function handOver() {
         if (!root.inCompositor) {
             Qt.exit(0);
@@ -242,42 +233,27 @@ Scope {
         id: greeterContext
         user: root.user
         preview: root.preview
-
-        onUnlocked: targetAction => {
-            if (targetAction === LockContext.ActionEnum.Poweroff) {
-                Session.poweroff();
-            } else if (targetAction === LockContext.ActionEnum.Reboot) {
-                Session.reboot();
-            } else {
-                root.login();
-            }
-        }
+        onAuthenticated: root.login()
     }
 
     Connections {
         target: Greetd
-        enabled: !root.preview && Greetd.available
+        enabled: greeterContext.live
         function onLaunched() {
             launchedFile.setText(JSON.stringify({ user: root.user, session: root.session }));
         }
         function onError(error) {
             // A launch greetd refused: come back so the user can try again.
-            if (launchTimer.running || handoffTimer.running || !GlobalStates.screenLocked) {
-                launchTimer.stop();
-                handoffTimer.stop();
-                root.launching = false;
-                GlobalStates.screenLocked = true;
-                root.shown = true;
-            }
+            if (!root.launching) return;
+            leaveTimer.stop();
+            launchTimer.stop();
+            root.launching = false;
+            root.veiled = true;
+            root.shown = true;
         }
     }
 
     // ------------------------------------------------------------------ surfaces
-
-    LazyLoader {
-        active: root.ready
-        component: Background {}
-    }
 
     Variants {
         model: Quickshell.screens

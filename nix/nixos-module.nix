@@ -21,26 +21,65 @@ let
     else
       lib.attrNames (lib.filterAttrs (_: u: u.isNormalUser) config.users.users);
 
-  # The greeter's compositor. Each user's monitor layout, keyboard and the like are merged on
-  # top at runtime (`user.json`), then whatever `settings` sets.
-  baseConfig = lib.recursiveUpdate {
-    autostart = [
-      [
-        (lib.getExe cfg.package)
-        "ui"
-      ]
-    ];
-    # Nothing to launch from the login screen: no terminal, launcher or window binds.
-    default_binds = false;
-    xwayland.enable = false;
-    layer_rules = import "${hecate}/nix/shell-layer-rules.nix" ++ [
+  # Where the login screen's hecate writes down its blobs when it exits, and the session's
+  # hecate carries on from (its `background.blobs.resume`, which hecate's Home Manager module
+  # points here). Under /run: it only means something until the next frame.
+  blobsFile = "/run/hecate-greetd/blobs.json";
+
+  # The haiiro faces with their fontconfig fallback order, from the same hecate as the shell.
+  haiiroFonts =
+    hecate.packages.${system}.haiiro-fonts or (pkgs.callPackage "${hecate}/nix/fonts.nix" { });
+
+  # The greeter's compositor: `settings` over the haiiro look, and each user's keyboard and
+  # monitor layout merged on top at runtime (`user.json`). The background is hecate's own
+  # blobs, for everyone and always moving: that part is not `settings`' to change.
+  baseConfig =
+    lib.recursiveUpdate
+      (lib.recursiveUpdate {
+        autostart = [
+          [
+            (lib.getExe cfg.package)
+            "ui"
+          ]
+        ];
+        # Nothing to launch from the login screen: no terminal, launcher or window binds.
+        default_binds = false;
+        xwayland.enable = false;
+        general.background_color = "#191724";
+        blur.enable = false;
+        # The login screen pixelates its own parts in and out; its surface is just there.
+        layer_rules = [
+          {
+            match.namespace = "^hecate-greetd$";
+            animation = "none";
+          }
+        ];
+        environment.QT_QPA_PLATFORM = "wayland";
+      } cfg.settings)
       {
-        match.namespace = "^hecate-greetd$";
-        animation = "none";
-      }
+        background.blobs = {
+          enable = true;
+          still = false;
+          save = blobsFile;
+        };
+        # No picture of a desktop before or after the login screen: the blobs are what the
+        # session's first frame carries on from.
+        splash.enable = false;
+      };
+
+  shellSettingsFile = (pkgs.formats.json { }).generate "hecate-greetd-shell.json" cfg.shellSettings;
+
+  # One command for a login that still shows a black frame: what the kernel did in between.
+  handoverCapture = pkgs.writeShellApplication {
+    name = "hecate-handover-capture";
+    runtimeInputs = with pkgs; [
+      coreutils
+      diffutils
+      gnugrep
+      systemd
     ];
-    environment.QT_QPA_PLATFORM = "wayland";
-  } cfg.settings;
+    text = builtins.readFile ./handover-capture.sh;
+  };
 
   baseConfigFile =
     pkgs.runCommand "hecate-greetd-compositor.json"
@@ -58,6 +97,7 @@ let
     export HECATE_GREETD_BASE_CONFIG=${baseConfigFile}
     export HECATE_GREETD_SESSION_DIRS=${dm.sessionData.desktops}/share/wayland-sessions
     export HECATE_GREETD_USERS=${lib.escapeShellArg (lib.concatStringsSep "," users)}
+    export HECATE_GREETD_SHELL_CONFIG=${shellSettingsFile}
     ${lib.optionalString (
       cfg.defaultUser != null
     ) "export HECATE_GREETD_DEFAULT_USER=${lib.escapeShellArg cfg.defaultUser}"}
@@ -70,9 +110,9 @@ in
 {
   options.services.hecate-greetd = {
     enable = lib.mkEnableOption ''
-      hecate-greetd, a greetd greeter that is the hecate shell's lock screen. It shows the
-      wallpaper, colours, widgets, monitor layout and keyboard layout of the user logging in,
-      as shared by their shell (Settings → hecate-greetd)
+      hecate-greetd, a greetd greeter built from the hecate shell's parts, over hecate's blob
+      background. It looks the same for everyone and takes the monitor layout and keyboard
+      layout of the user logging in, as shared by their shell (Settings → hecate-greetd)
     '';
 
     package = lib.mkOption {
@@ -101,8 +141,8 @@ in
       default = hecate.packages.${system}.hecate-shell;
       defaultText = lib.literalExpression "inputs.hecate.packages.\${system}.hecate-shell";
       description = ''
-        The shell whose lock screen the login screen is. Use the same one your users run, so
-        their settings mean the same thing.
+        The shell whose parts the login screen is built from. Use the same one your users run,
+        so both look the same.
       '';
     };
 
@@ -113,7 +153,8 @@ in
       example = [ "majo" ];
       description = ''
         Accounts the login screen offers, in this order. Each gets
-        `/var/lib/hecate-greetd/users/<name>`, where their shell shares its look.
+        `/var/lib/hecate-greetd/users/<name>`, where their shell shares their keyboard and
+        monitor layout.
       '';
     };
 
@@ -137,25 +178,35 @@ in
     settings = lib.mkOption {
       type = (pkgs.formats.json { }).type;
       default = { };
-      example = lib.literalExpression ''{ cursor = { theme = "Bibata-Modern-Classic"; size = 24; }; }'';
+      example = lib.literalExpression ''{ cursor = { theme = "haiiro"; size = 24; }; }'';
       description = ''
-        hecate configuration for the login screen's compositor (docs/config.md in wl-hex), under
-        each user's own outputs, keyboard, input, cursor, blur and animation settings.
+        hecate configuration for the login screen's compositor (docs/config.md in hecate), under
+        each user's own outputs, keyboard, input and cursor settings. The background is not set
+        here: it is hecate's blobs (`background.blobs`), always on and always moving.
+      '';
+    };
+
+    shellSettings = lib.mkOption {
+      type = (pkgs.formats.json { }).type;
+      default = { };
+      example = lib.literalExpression ''{ time.format = "h:mm AP"; }'';
+      description = ''
+        Settings of the bundled shell for the login screen, as in a user's
+        `~/.config/illogical-impulse/config.json`. The login screen is the same for every
+        user, so nothing of theirs is read: what it shows (the clock's format, say) is set
+        here.
       '';
     };
 
     fonts = lib.mkOption {
       type = lib.types.listOf lib.types.package;
-      default = with pkgs; [
-        rubik
-        nerd-fonts.jetbrains-mono
-        material-symbols
-        twemoji-color-font
-      ];
-      defaultText = lib.literalExpression "the fonts the shell's Home Manager module installs";
+      default = [ haiiroFonts ];
+      defaultText = lib.literalExpression "[ inputs.hecate.packages.\${system}.haiiro-fonts ]";
       description = ''
-        Fonts for the login screen. The shell's usually come from each user's profile, which
-        the greeter can't see, so they're installed system-wide.
+        Fonts for the login screen, installed system-wide with whatever fontconfig files they
+        carry: the greeter has no home to get them from. The default is the haiiro set (IBM
+        VGA 8x16, Jacquard 24 and GNU Unifont as the fallback for glyphs those lack), whose
+        fontconfig file makes that fallback order hold for every program.
       '';
     };
 
@@ -172,12 +223,12 @@ in
 
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
-      default = with pkgs; [
-        bibata-cursors
-        kdePackages.breeze-icons
-      ];
-      defaultText = lib.literalExpression "[ pkgs.bibata-cursors pkgs.kdePackages.breeze-icons ]";
-      description = "Cursor and icon themes your users' settings name, installed system-wide.";
+      default = [ ];
+      example = lib.literalExpression "[ pkgs.bibata-cursors ]";
+      description = ''
+        Cursor themes your users' settings (or `settings.cursor`) name, installed system-wide.
+        Without the theme hecate draws its built-in pointer.
+      '';
     };
   };
 
@@ -206,7 +257,7 @@ in
     # Between the login screen's hecate exiting and the session's starting nothing has the GPU
     # open, and the kernel would put the text console back on screen. Holding it open keeps
     # the login screen's last frame up (hecate leaves it there) until the session's first
-    # frame, the same picture, replaces it.
+    # frame, the same blobs a moment on, replaces it.
     #
     # Through the render node: the kernel counts it as an open of the device (no console
     # restore while it's held), but a render node can never be DRM master. The first open of
@@ -260,6 +311,12 @@ in
         user = "greeter";
         group = "greeter";
       };
+      # The login screen's hecate writes its blobs here; whoever logs in reads them.
+      ${dirOf blobsFile}.d = {
+        mode = "0755";
+        user = "greeter";
+        group = "greeter";
+      };
     }
     // lib.genAttrs' users (
       name:
@@ -272,9 +329,16 @@ in
       }
     );
 
-    # `hecate-greetd sync` (the shell runs it) and the themes the login screen draws with.
-    environment.systemPackages = [ cfg.package ] ++ cfg.extraPackages;
+    # `hecate-greetd sync` (the shell runs it), `hecate-handover-capture` and the themes the
+    # login screen draws with.
+    environment.systemPackages = [
+      cfg.package
+      handoverCapture
+    ]
+    ++ cfg.extraPackages;
     fonts.packages = cfg.fonts;
+    # Only their etc/fonts is taken from these: the haiiro set's fallback order.
+    fonts.fontconfig.confPackages = cfg.fonts;
 
     # Unlock the keyring with the login password, as the shell's lock screen does.
     security.pam.services.greetd.enableGnomeKeyring = lib.mkDefault true;

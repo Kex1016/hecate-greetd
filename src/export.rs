@@ -1,29 +1,27 @@
-//! A user's export: what the login screen may show for them.
+//! A user's export: what the login screen takes from them.
 //!
-//! The greeter can't read home directories, so `hecate-greetd sync` (run by the user's shell)
-//! copies what the shell's lock screen needs into `<state>/users/<user>/`, a directory the user
-//! owns and the `greeter` group can read (setgid, created by the NixOS module):
+//! The login screen looks the same for everyone: hecate's blobs and the haiiro kit. What comes
+//! along per user is their keyboard and monitor layout and their avatar. The greeter can't
+//! read home directories, so `hecate-greetd sync` (run by the user's shell) copies those into
+//! `<state>/users/<user>/`, a directory the user owns and the `greeter` group can read (setgid,
+//! created by the NixOS module):
 //!
 //! ```text
 //! users/<user>/
 //!   current -> home-<time>      the latest snapshot, swapped atomically
-//!   home-<time>/                laid out like a home directory, so the shell reads it unchanged
-//!     .config/illogical-impulse/config.json    shell config, image paths pointing into files/
-//!     .local/state/quickshell/user/generated/  generated Material colours (colors.json, ...)
-//!     .face                                    avatar
-//!     compositor.json          hecate settings for the login screen (outputs, keyboard, ...)
+//!   home-<time>/
+//!     .face                     avatar
+//!     compositor.json           hecate settings for the login screen (outputs, keyboard, ...)
 //!     manifest.json
-//!   files/<hash>.<ext>          wallpapers and other images the config refers to
-//!   splash/<output>.png         the desktop as it was, written by hecate itself (`splash.dir`)
-//!                               at lock and logout, which the login screen fades into
+//!   blobs.json                  where the session's hecate left its blobs, written by hecate
+//!                               itself (`background.blobs.save`) when it exits, which the
+//!                               login screen carries on from after a logout
 //! ```
 //!
 //! Everything in there is the user's to write, so the greeter treats it as untrusted: it checks
 //! ownership, never follows symlinks, caps sizes and only takes a few compositor tables.
 
-use std::collections::HashSet;
 use std::fs;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
@@ -34,17 +32,19 @@ use serde_json::{Map, Value, json};
 
 use crate::sys::{self, Passwd};
 
-/// Compositor tables the login screen takes from a user. Anything else (autostart, binds,
-/// environment, rules) could run commands as the greeter, so it never gets through.
+/// Compositor tables the login screen takes from a user: where their monitors are and how
+/// their keyboard and pointer are set up. How it looks is not theirs to say (the blobs run
+/// for everyone), and anything else (autostart, binds, environment, rules) could run commands
+/// as the greeter, so it never gets through.
 pub const COMPOSITOR_KEYS_DISPLAYS: &[&str] = &["outputs"];
 pub const COMPOSITOR_KEYS_INPUT: &[&str] = &["keyboard", "input", "cursor"];
-pub const COMPOSITOR_KEYS_LOOK: &[&str] = &["blur", "animations"];
 
-const IMAGE_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "webp", "gif", "bmp", "avif", "tif", "tiff", "svg", "jxl",
-];
-const MAX_IMAGE: u64 = 64 << 20;
 const MAX_SMALL: u64 = 4 << 20;
+/// A few kilobytes per monitor; anything bigger isn't hecate's.
+const MAX_BLOBS: u64 = 1 << 20;
+
+/// What earlier versions kept in an export (wallpapers and desktop pictures).
+const LEGACY_DIRS: &[&str] = &["files", "splash"];
 
 pub fn export_dir(user: &str) -> PathBuf {
     sys::users_dir().join(user)
@@ -97,7 +97,6 @@ pub fn compositor_fragment(snap: &Path) -> Value {
     let allowed: Vec<&str> = COMPOSITOR_KEYS_DISPLAYS
         .iter()
         .chain(COMPOSITOR_KEYS_INPUT)
-        .chain(COMPOSITOR_KEYS_LOOK)
         .copied()
         .collect();
     Value::Object(
@@ -107,31 +106,22 @@ pub fn compositor_fragment(snap: &Path) -> Value {
     )
 }
 
-/// Copy a snapshot's home tree into `dest` (the greeter's private, writable copy), and the
-/// user's splash pictures (`splash_dir`) where hecate looks for them by default.
-pub fn copy_home(snap: &Path, splash: Option<&Path>, dest: &Path) -> io::Result<()> {
-    if dest.exists() {
-        fs::remove_dir_all(dest)?;
-    }
-    sys::copy_tree(snap, dest, MAX_SMALL, 8)?;
-    for meta_file in ["compositor.json", "manifest.json"] {
-        let _ = fs::remove_file(dest.join(meta_file));
-    }
-    if let Some(splash) = splash {
-        sys::copy_tree(
-            splash,
-            &dest.join(".local/state/hecate/snapshots"),
-            MAX_IMAGE,
-            1,
-        )?;
-    }
-    Ok(())
+/// Where the user's session left its blobs (hecate's `background.blobs.save`, pointed here by
+/// their config), if the file is really theirs and looks like what hecate writes.
+pub fn session_blobs(user: &Passwd) -> Option<Value> {
+    blobs_in(&export_dir(&user.name), user.uid)
 }
 
-/// The user's splash pictures, if the directory is really theirs.
-pub fn splash_dir(user: &Passwd) -> Option<PathBuf> {
-    let dir = export_dir(&user.name).join("splash");
-    sys::is_owned_dir(&dir, user.uid).then_some(dir)
+fn blobs_in(dir: &Path, uid: u32) -> Option<Value> {
+    if !sys::is_owned_dir(dir, uid) {
+        return None;
+    }
+    let path = dir.join("blobs.json");
+    let meta = fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() || meta.uid() != uid {
+        return None;
+    }
+    sys::read_json_limited(&path, MAX_BLOBS).filter(|v| v["outputs"].is_array())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -163,10 +153,10 @@ pub fn sync() -> io::Result<Value> {
         .map(PathBuf::from)
         .unwrap_or_else(|| me.home.clone());
     let config_home = xdg("XDG_CONFIG_HOME", &home, ".config");
-    let state_home = xdg("XDG_STATE_HOME", &home, ".local/state");
 
+    // The shell's switches: share at all, and which of the two layouts.
     let shell_config_path = config_home.join("illogical-impulse/config.json");
-    let mut shell_config = sys::read_json_limited(&shell_config_path, MAX_SMALL)
+    let shell_config = sys::read_json_limited(&shell_config_path, MAX_SMALL)
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
     let greeter = shell_config.get("greeter").cloned().unwrap_or(json!({}));
@@ -182,55 +172,21 @@ pub fn sync() -> io::Result<Value> {
     let (secs, nanos) = now();
     let snap_name = format!("home-{secs}{nanos:09}");
     let snap = dir.join(&snap_name);
-    let files = dir.join("files");
     let result = (|| -> io::Result<Value> {
-        for d in [
-            snap.join(".config/illogical-impulse"),
-            snap.join(".local/state/quickshell/user/generated"),
-            files.clone(),
-        ] {
-            fs::create_dir_all(&d)?;
-        }
+        fs::create_dir_all(&snap)?;
 
-        // Shell config, with every image it names under $HOME copied into files/.
-        let mut used = HashSet::new();
-        rewrite_paths(&mut shell_config, &home, &files, &mut used);
-        sys::write_json(
-            &snap.join(".config/illogical-impulse/config.json"),
-            &shell_config,
-            0o640,
-        )?;
-
-        // Generated colours (and the lock screen's own, for a separate lock wallpaper).
-        let generated = state_home.join("quickshell/user/generated");
-        if let Ok(entries) = fs::read_dir(&generated) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let small_json = path.extension().is_some_and(|e| e == "json")
-                    && entry
-                        .metadata()
-                        .is_ok_and(|m| m.is_file() && m.len() <= MAX_SMALL);
-                if small_json {
-                    copy_readable(
-                        &path,
-                        &snap
-                            .join(".local/state/quickshell/user/generated")
-                            .join(entry.file_name()),
-                    )?;
-                }
-            }
-        }
-
+        let mut avatar = false;
         for face in [".face", ".face.icon"] {
             let src = home.join(face);
             if fs::metadata(&src).is_ok_and(|m| m.is_file() && m.len() <= MAX_SMALL) {
                 copy_readable(&src, &snap.join(face))?;
+                avatar = true;
                 break;
             }
         }
 
         // hecate settings from the running compositor (Nix config + the shell's hecate page).
-        let mut keys: Vec<&str> = COMPOSITOR_KEYS_LOOK.to_vec();
+        let mut keys: Vec<&str> = Vec::new();
         if flag("displays") {
             keys.extend(COMPOSITOR_KEYS_DISPLAYS);
         }
@@ -255,13 +211,13 @@ pub fn sync() -> io::Result<Value> {
             "shared": true,
             "user": me.name,
             "synced_at": secs,
-            "files": used.len(),
+            "files": u32::from(avatar),
+            "avatar": avatar,
             "outputs": outputs,
             "keyboard": compositor.get("keyboard").and_then(|k| k.get("layout")).cloned().unwrap_or(Value::Null),
         });
         sys::write_json(&snap.join("manifest.json"), &status, 0o640)?;
         set_tree_perms(&snap)?;
-        fs::set_permissions(&files, fs::Permissions::from_mode(0o2750))?;
 
         // Swap `current` over to the new snapshot in one rename.
         let tmp_link = dir.join(format!(".current.{}", std::process::id()));
@@ -269,7 +225,7 @@ pub fn sync() -> io::Result<Value> {
         symlink(&snap_name, &tmp_link)?;
         fs::rename(&tmp_link, dir.join("current"))?;
 
-        prune(&dir, &snap_name, &files, &used);
+        prune(&dir, &snap_name);
         Ok(status)
     })();
 
@@ -293,20 +249,17 @@ fn clear(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn prune(dir: &Path, keep_snap: &str, files: &Path, used: &HashSet<String>) {
+/// Old snapshots, and what earlier versions kept here.
+fn prune(dir: &Path, keep_snap: &str) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("home-") && name != keep_snap {
+            let old_snap = name.starts_with("home-") && name != keep_snap;
+            if (old_snap || LEGACY_DIRS.contains(&name.as_ref()))
+                && entry.file_type().is_ok_and(|t| t.is_dir())
+            {
                 let _ = fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-    if let Ok(entries) = fs::read_dir(files) {
-        for entry in entries.flatten() {
-            if !used.contains(entry.file_name().to_string_lossy().as_ref()) {
-                let _ = fs::remove_file(entry.path());
             }
         }
     }
@@ -374,55 +327,6 @@ fn strip_nulls(v: Value) -> Value {
     }
 }
 
-/// Point every image path under `home` at a copy in `files`.
-fn rewrite_paths(v: &mut Value, home: &Path, files: &Path, used: &mut HashSet<String>) {
-    match v {
-        Value::Object(m) => m
-            .values_mut()
-            .for_each(|v| rewrite_paths(v, home, files, used)),
-        Value::Array(a) => a
-            .iter_mut()
-            .for_each(|v| rewrite_paths(v, home, files, used)),
-        Value::String(s) => {
-            if let Some(new) = export_image(s, home, files, used) {
-                *s = new;
-            }
-        }
-        _ => {}
-    }
-}
-
-fn export_image(s: &str, home: &Path, files: &Path, used: &mut HashSet<String>) -> Option<String> {
-    let (prefix, raw) = match s.strip_prefix("file://") {
-        Some(rest) => ("file://", sys::percent_decode(rest)),
-        None => ("", s.to_string()),
-    };
-    let path = Path::new(&raw);
-    if !path.is_absolute() || !path.starts_with(home) {
-        return None;
-    }
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if !IMAGE_EXTS.contains(&ext.as_str()) {
-        return None;
-    }
-    let meta = fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_IMAGE {
-        return None;
-    }
-    let mut h = DefaultHasher::new();
-    raw.hash(&mut h);
-    meta.len().hash(&mut h);
-    meta.mtime().hash(&mut h);
-    meta.mtime_nsec().hash(&mut h);
-    let name = format!("{:016x}.{ext}", h.finish());
-    let dest = files.join(&name);
-    if !dest.exists() {
-        copy_readable(path, &dest).ok()?;
-    }
-    used.insert(name);
-    Some(format!("{prefix}{}", dest.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,57 +347,67 @@ mod tests {
     }
 
     #[test]
-    fn copies_splash_pictures_but_not_links() {
-        let tmp = std::env::temp_dir().join(format!("hg-splash-{}", std::process::id()));
-        let (snap, splash, dest) = (tmp.join("snap"), tmp.join("splash"), tmp.join("dest"));
-        fs::create_dir_all(&snap).unwrap();
-        fs::create_dir_all(&splash).unwrap();
-        fs::write(splash.join("DP-1.png"), b"png").unwrap();
-        symlink("/etc/shadow", splash.join("DP-2.png")).unwrap();
-        copy_home(&snap, Some(&splash), &dest).unwrap();
-        let pictures = dest.join(".local/state/hecate/snapshots");
-        assert_eq!(fs::read(pictures.join("DP-1.png")).unwrap(), b"png");
-        assert!(fs::symlink_metadata(pictures.join("DP-2.png")).is_err());
+    fn takes_layout_tables_only() {
+        let tmp = std::env::temp_dir().join(format!("hg-fragment-{}", std::process::id()));
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            tmp.join("compositor.json"),
+            json!({
+                "outputs": { "DP-1": { "scale": 1.5 } },
+                "keyboard": { "layout": "hu" },
+                "cursor": "not a table",
+                "animations": { "enable": false },
+                "background": { "blobs": { "enable": false } },
+                "autostart": [["sh"]]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            compositor_fragment(&tmp),
+            json!({ "outputs": { "DP-1": { "scale": 1.5 } }, "keyboard": { "layout": "hu" } })
+        );
         fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]
-    fn rewrites_images_under_home() {
-        let tmp = std::env::temp_dir().join(format!("hg-test-{}", std::process::id()));
-        let home = tmp.join("home");
-        let files = tmp.join("files");
-        fs::create_dir_all(home.join("Pictures")).unwrap();
-        fs::create_dir_all(&files).unwrap();
-        fs::write(home.join("Pictures/wall paper.png"), b"png").unwrap();
-        let mut cfg = json!({
-            "background": {
-                "wallpaperPath": home.join("Pictures/wall paper.png").display().to_string(),
-                "thumb": format!("file://{}", home.join("Pictures/wall%20paper.png").display()),
-                "elsewhere": "/nix/store/x.png",
-                "missing": home.join("nope.png").display().to_string(),
-                "list": [{ "monitor": "DP-1", "path": home.join("Pictures/wall paper.png").display().to_string() }]
-            }
-        });
-        let mut used = HashSet::new();
-        rewrite_paths(&mut cfg, &home, &files, &mut used);
-        let wall = cfg["background"]["wallpaperPath"].as_str().unwrap();
-        assert!(wall.starts_with(files.to_str().unwrap()));
-        assert!(
-            cfg["background"]["thumb"]
-                .as_str()
-                .unwrap()
-                .starts_with("file://")
-        );
-        assert_eq!(cfg["background"]["elsewhere"], "/nix/store/x.png");
-        assert!(
-            cfg["background"]["missing"]
-                .as_str()
-                .unwrap()
-                .ends_with("nope.png")
-        );
-        assert_eq!(cfg["background"]["list"][0]["path"].as_str().unwrap(), wall);
-        assert_eq!(used.len(), 1);
-        assert_eq!(fs::read(wall).unwrap(), b"png");
+    fn prunes_old_snapshots_and_legacy_pictures() {
+        let tmp = std::env::temp_dir().join(format!("hg-prune-{}", std::process::id()));
+        for d in ["home-1", "home-2", "files", "splash", "other"] {
+            fs::create_dir_all(tmp.join(d)).unwrap();
+        }
+        fs::write(tmp.join("blobs.json"), b"{}").unwrap();
+        prune(&tmp, "home-2");
+        let mut left: Vec<String> = fs::read_dir(&tmp)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["blobs.json", "home-2", "other"]);
         fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn session_blobs_must_be_the_users_own_file() {
+        let dir = std::env::temp_dir().join(format!("hg-blobs-{}", std::process::id()));
+        let elsewhere = std::env::temp_dir().join(format!("hg-blobs-{}.json", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let me = sys::uid();
+        assert_eq!(blobs_in(&dir, me), None, "no file yet");
+
+        let state = json!({ "outputs": [{ "output": "DP-1", "blobs": [] }] });
+        fs::write(dir.join("blobs.json"), state.to_string()).unwrap();
+        assert_eq!(blobs_in(&dir, me), Some(state.clone()));
+        assert_eq!(blobs_in(&dir, me + 1), None, "not their directory");
+
+        fs::write(dir.join("blobs.json"), b"{\"outputs\": 3}").unwrap();
+        assert_eq!(blobs_in(&dir, me), None, "not what hecate writes");
+
+        fs::remove_file(dir.join("blobs.json")).unwrap();
+        fs::write(&elsewhere, state.to_string()).unwrap();
+        symlink(&elsewhere, dir.join("blobs.json")).unwrap();
+        assert_eq!(blobs_in(&dir, me), None, "a link is never followed");
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_file(&elsewhere).unwrap();
     }
 }

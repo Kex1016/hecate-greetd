@@ -8,13 +8,13 @@ mod sys;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-hecate-greetd: greetd greeter for hecate, showing the shell's lock screen
+hecate-greetd: greetd greeter for hecate, the haiiro login screen
 
 Usage:
   hecate-greetd session [-- <hecate args>]   greetd's default_session command (as the greeter)
   hecate-greetd ui                           the login screen, autostarted by the greeter's hecate
-  hecate-greetd sync [--json]                share your look with the login screen (your shell runs it)
-  hecate-greetd preview                      show the login screen with your look, in your session
+  hecate-greetd sync [--json]                share your keyboard, displays and avatar with the login screen (your shell runs it)
+  hecate-greetd preview                      show the login screen in your session
   hecate-greetd users | sessions             print who and what the login screen offers, as JSON
 ";
 
@@ -34,10 +34,15 @@ fn main() -> ExitCode {
                 println!("{status}");
             } else if status["shared"] == true {
                 println!(
-                    "synced {} for the login screen: {} files, displays {}",
+                    "synced {} for the login screen: keyboard {}, displays {}, avatar {}",
                     status["user"].as_str().unwrap_or("?"),
-                    status["files"],
-                    status["outputs"]
+                    status["keyboard"],
+                    status["outputs"],
+                    if status["avatar"] == true {
+                        "yes"
+                    } else {
+                        "no"
+                    }
                 );
             } else {
                 println!("not shared (greeter.share is off in the shell config); export cleared");

@@ -23,18 +23,17 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1791925383,
-        "narHash": "sha256-dDOQqmfJlaUMKOP9ExwTmEbymDzMePdmzgy8+KbyuEU=",
-        "ref": "refs/heads/master",
-        "rev": "0dcbd0a772538d0a56ce7ce0bb9de6c6e87487de",
-        "shallow": true,
-        "type": "git",
-        "url": "https://github.com/Kex1016/wl-hex"
+        "lastModified": 1795183199,
+        "narHash": "sha256-pnXt9jqeYM0GNdvVoOOi4toPH9xIe8e2CjxHHKJLg2Q=",
+        "owner": "Kex1016",
+        "repo": "hecate",
+        "rev": "d6f395f947c48bbf84811702d733df5ff320c123",
+        "type": "github"
       },
       "original": {
-        "shallow": true,
-        "type": "git",
-        "url": "https://github.com/Kex1016/wl-hex"
+        "owner": "Kex1016",
+        "repo": "hecate",
+        "type": "github"
       }
     },
     "home-manager": {

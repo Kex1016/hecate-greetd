@@ -2,9 +2,8 @@
   description = "hecate-greetd: greetd greeter that is hecate's own lock screen";
 
   inputs = {
-    # The compositor and the shell whose lock screen this is. git+https so a private repo is
-    # fetched with git's credentials.
-    hecate.url = "git+https://github.com/Kex1016/wl-hex?shallow=1";
+    # The compositor and the shell whose lock screen this is.
+    hecate.url = "github:Kex1016/hecate";
     nixpkgs.follows = "hecate/nixpkgs";
   };
 

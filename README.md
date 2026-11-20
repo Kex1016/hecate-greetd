@@ -1,26 +1,22 @@
 # hecate-greetd
 
 A [greetd](https://sr.ht/~kennylevinsen/greetd/) greeter for
-[hecate](https://github.com/Kex1016/wl-hex): the login screen **is** the bundled shell's lock
-screen, running inside hecate, with the look of whoever is logging in.
+[hecate](https://github.com/Kex1016/hecate). The login screen is the haiiro greeter, a QuickShell
+entry point that runs inside hecate on the same animated blob background as the desktop.
 
-- **Same code, same look.** The greeter is a QuickShell entry point (`greeter.qml`) installed
-  next to the shell's `shell.qml`, so it runs the shell's own `LockSurface`, wallpaper layer,
-  clock and desktop widgets, colours and animations: the centered wallpaper in its shape (click
-  to thump, scroll to change the shape) or the zoomed blur, material-shape password dots, the
-  shake on a wrong password, the toolbar pop-in, and on login the shell's unlock animation, then
-  a fade into your desktop as it was (hecate's login splash), which the session keeps on screen
-  until its shell is up.
-- **The selected user's settings.** Their shell config, generated Material colours, wallpapers
-  (per-monitor ones too), avatar, clock style and widgets.
-- **The selected user's monitors.** Their hecate `outputs` (mode, refresh rate, scale,
-  orientation, position, VRR; from the Nix config and the shell's hecate page) and keyboard,
-  mouse and cursor settings are merged into the greeter's compositor config the moment they
-  are picked. hecate does the hot-plugging: a monitor plugged in later gets that user's
-  settings, and the greeter puts a surface on it.
-- **Configured from the shell.** Settings → hecate-greetd (next to hecate): share or not,
-  wallpaper style (as the lock screen, centered shape, blurred), a wallpaper of its own, the
-  status line under the clock, toolbars, monitor layout and input, Sync now and Preview.
+- **Always the blobs.** The greeter draws no wallpaper and no colours of its own. hecate's
+  blob background shows for every user, always moving. The NixOS module forces
+  `background.blobs` on (and `splash` off), whatever `settings` says.
+- **One look for everyone.** The screen is built from the haiiro kit: the logo block with host,
+  distro and session, the clock, the `login:` window with the user row, the prompt, session
+  chips, key hints, the status line and sleep / reboot / shutdown. Nothing of the selected
+  user's look is read: no wallpaper, colours or shell config.
+- **The selected user's monitors and input.** Their hecate `outputs` (mode, refresh rate,
+  scale, orientation, position, VRR), keyboard, input and cursor settings are merged into the
+  greeter's compositor config the moment they are picked. hecate hot-plugs them, so a monitor
+  plugged in later gets that user's layout. Picking another user never restarts the UI.
+- **Configured from the shell.** Settings → hecate-greetd (next to hecate): sharing on or off,
+  the monitor layout and input the login screen takes, and Sync now and Preview.
 
 ## How it fits together
 
@@ -29,45 +25,72 @@ greetd ── hecate-greetd session            (as the `greeter` user)
             └─ hecate --config $XDG_RUNTIME_DIR/hecate-greetd/config.json
                  include = [ <greeter config from Nix>, "user.json" ]   ← selected user's
                  └─ autostart: hecate-greetd ui                          outputs/keyboard/...
-                      └─ qs -p …/shell/greeter.qml   (HOME = a copy of the user's export)
-                           exit 10: another user was picked → apply their layout, restart
-                           greetd has the session → the supervisor remembers the login
-                           and runs `hecate msg exit` with the desktop picture still
-                           up; the UI goes down with the compositor
+                      └─ qs -p …/shell/greeter.qml
+                           another user picked: apply their layout, reload hecate
+                           greetd accepted a session: remember the login, then
+                           `hecate msg exit` while the blobs are still on screen
 ```
 
 The greeter can't read home directories, so the user's shell shares what it needs:
 `hecate-greetd sync` (run by the shell at startup and after any relevant change) copies the
-shell config (image paths rewritten to copies), the generated colours, the avatar and the
-compositor tables the login screen takes (`outputs`, `keyboard`, `input`, `cursor`, `blur`,
-`animations`, read from the running hecate) into `/var/lib/hecate-greetd/users/<user>/`,
-which the user owns and the `greeter` group reads. Snapshots are swapped atomically. hecate
-writes its login splash pictures (`<output>.png`, wallpaper and shell, never windows) straight
-to `splash/` in there when `splash.dir` points at it, at every lock and logout; the login
-screen only uses them while the user shares their look.
-
-Between the login screen and the session, the screen doesn't go dark: hecate leaves its last
-frame up when it exits and starts without turning outputs off, and the NixOS module's
-`hecate-greetd-hold-gpu` service keeps the GPU open in between, so the kernel doesn't put the
-text console back. Once greetd has the session, `hecate-greetd ui` remembers the login and
-tells hecate to exit while its desktop picture is still on screen (the UI goes down with the
-compositor; exiting the UI first would leave hecate's bare background as the last frame), so
-that picture stays until the session's first frame, the same picture, replaces it. After a
-logout it works the other way round: the greeter's hecate starts on the user's desktop
-pictures (`splash.enable` with `splash.save = false`, only once a session has run since boot)
-and fades them into the lock screen when it shows, instead of a dark frame while the UI
-loads. greetd itself switches tty1 to text mode before each session, so
-`services.hecate-greetd.hideConsole` (on by default) keeps the console off tty1
-(`fbcon=vc:2-63`); boot messages and the emergency shell go to tty2 (`console=tty2`,
-Ctrl+Alt+F2).
+compositor tables the login screen takes (`outputs`, `keyboard`, `input`, `cursor`) from the
+running hecate into `/var/lib/hecate-greetd/users/<user>/`, which the user owns and the
+`greeter` group reads. Snapshots are swapped atomically, and old copies of wallpapers, colours
+and splash pictures are pruned. Nothing else of the user's leaves their home.
 
 The greeter treats an export as untrusted: it checks the owner, never follows symlinks, caps
 sizes, takes only those compositor tables (no autostart, binds or environment), validates them
-with `hecate validate`, works on a private copy and kills everything a UI instance started
-when it exits.
+with `hecate validate`, works on a private copy and kills everything a UI instance started when
+it exits.
 
-If the shell-based login screen fails to start three times in a row (a broken config, a
-missing Qt module), a minimal fallback greeter with no shell code takes over.
+### The blobs carry over the login
+
+- **Login.** When greetd accepts the session, the UI pixelates out so only the blobs are on
+  screen. The greeter's hecate then exits and writes its blob simulations to
+  `/run/hecate-greetd/blobs.json` (`background.blobs.save`). The session's hecate resumes from
+  that file (`background.blobs.resume`), so its first frame is the next blob frame.
+- **Logout.** A session whose hecate saves its blobs to
+  `/var/lib/hecate-greetd/users/<user>/blobs.json` leaves them there, and the greeter's hecate
+  carries on from them. The greeter reads that file only if a session has run since boot and the
+  file is the user's own and looks like hecate's.
+- **No splash.** With the blob background on, hecate draws no login splash: no picture is
+  decoded or held, and the first frame doesn't wait for the shell.
+
+### The first frame does not go black
+
+The session takes over the monitors with a page flip rather than a modeset: hecate reads what
+the CRTC shows when it takes the output over (format, modifier, VRR) and keeps VRR on for its
+first commit, so the refresh timing doesn't change at login. Gamma is not reset when no table is
+set. The journal says what happened, once per output:
+
+```
+first frame on DP-1 committed in 9 ms (flipped onto the mode already on screen, no modeset)
+first frame on DP-1 kept what was on screen: AB30 0x…, VRR on
+```
+
+Check it after a login with `journalctl -b -t hecate | grep 'first frame'`. If a frame still goes
+black, `sudo hecate-handover-capture`, then log out and in: the capture (planes before and
+after, both journals, every atomic commit the kernel saw in between) is written to
+`/var/log/hecate-handover-capture.log`. It needs a kernel with the DRM debug switch and turns
+its output off again after the first frame or five minutes.
+
+Between the login screen and the session the GPU stays open (`hecate-greetd-hold-gpu`), so the
+kernel doesn't put the text console back. greetd switches tty1 to text mode before each session,
+so `services.hecate-greetd.hideConsole` (on by default) keeps the console off tty1
+(`fbcon=vc:2-63`); boot messages and the emergency shell go to tty2 (Ctrl+Alt+F2).
+
+Two behaviours worth knowing:
+
+- An account without a password is not logged in by being selected. greetd reports it ready at
+  once, and the greeter waits at `press enter`. A notice from PAM (a fingerprint reader) or an
+  answered prompt counts as the user's part.
+- After a cancel (switching user) the greeter waits 300 ms before the next session. greetd's
+  answers don't say which request they answer, so without the wait a switch could log the new
+  user in with no password. QuickShell logs `Received unexpected greetd response success` after
+  each cancel; that line is harmless.
+
+If the greeter fails to start three times in a row (a broken config, a missing Qt module), a
+minimal fallback greeter with no shell code takes over.
 
 ## NixOS
 
@@ -91,28 +114,43 @@ Options (`services.hecate-greetd.*`):
 | `users` | every `isNormalUser` | accounts offered, in order; each gets its export directory |
 | `defaultUser` | first user | selected on the first start; after that the last to log in |
 | `defaultSession` | `services.displayManager.defaultSession` | else `hecate` |
-| `settings` | `{ }` | hecate config for the greeter's compositor, under each user's settings |
-| `fonts`, `extraPackages` | the shell's fonts, Bibata, Breeze icons | installed system-wide, since users' profiles are out of the greeter's reach |
+| `settings` | `{ }` | hecate config for the greeter's compositor, under each user's outputs, keyboard, input and cursor. The background is not set here: it is always the blobs |
+| `shellSettings` | `{ }` | settings of the bundled shell for the login screen, e.g. `{ time.format = "h:mm AP"; }`. Nothing of a user's is read |
+| `fonts` | the haiiro set from the hecate flake | installed system-wide with their fontconfig file, so the fallback order holds for every program. IBM VGA 8x16, Jacquard 24, GNU Unifont as fallback |
+| `hideConsole` | `true` | keeps the text console off tty1 (see above) |
+| `extraPackages` | `[ ]` | packages the login screen needs, installed system-wide. Add the cursor theme your `settings.cursor` names |
 | `hecatePackage`, `shellPackage` | `programs.hecate.package`, the flake's shell | |
+
+Give the greeter the haiiro pixel cursor before anyone has synced:
+
+```nix
+services.hecate-greetd = {
+  extraPackages = [ /* the haiiro cursor package */ ];
+  settings.cursor = { theme = "haiiro"; size = 24; };
+};
+```
 
 `services.displayManager.autoLogin` maps to greetd's `initial_session` (straight into hecate).
 The PAM stack is greetd's (the system `login` stack); the gnome-keyring is unlocked with the
 login password.
 
+The module also puts `hecate-handover-capture` on the system path (see above) and creates
+`/run/hecate-greetd` for the greeter's blob file.
+
 ## Commands
 
 ```
-hecate-greetd session      greetd's default_session command
-hecate-greetd ui           the login screen, autostarted by the greeter's hecate
-hecate-greetd sync [--json]   share your look (the shell runs it for you)
-hecate-greetd preview      the login screen with your look, in your session; Escape closes it
+hecate-greetd session         greetd's default_session command
+hecate-greetd ui              the login screen, autostarted by the greeter's hecate
+hecate-greetd sync [--json]   share your monitors and input with the login screen (the shell runs it)
+hecate-greetd preview         the login screen in your session; Escape closes it
 hecate-greetd users | sessions   what the login screen offers, as JSON
 ```
 
 ## Development
 
 `cargo test` for the Rust side. `nix build .#hecate-greetd --override-input hecate
-path:../wl-hex` builds against a local hecate checkout, and `hecate-greetd preview` (from a
-hecate session with the shell) shows the result without logging out.
+path:../hecate` builds against a local hecate checkout, and `hecate-greetd preview` (from a
+hecate session with the shell) shows the greeter without logging out.
 
 License: GPL-3.0-or-later, like hecate and the shell it runs.
