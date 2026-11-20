@@ -1,13 +1,14 @@
 //! The login screen's processes.
 //!
 //! greetd runs `hecate-greetd session` as the `greeter` user. That starts hecate with a
-//! generated config: the system's greeter config (from Nix) plus `user.json`, the compositor
-//! settings of whoever is selected (monitor layout, keyboard, ...). hecate autostarts
-//! `hecate-greetd ui`, which runs the shell's lock screen (QuickShell, `greeter.qml`) with that
-//! user's look and restarts it when another user is picked. When greetd has a session to start
-//! the UI writes `launched.json` and tells hecate to quit itself, while its surfaces (the
-//! user's desktop picture) are still up: hecate leaves that frame on screen, and the session's
-//! first frame, the same picture, replaces it. The UI goes with the compositor.
+//! generated config: the system's greeter config (from Nix) plus `user.json`, the keyboard and
+//! monitor layout of whoever is selected. hecate draws the background itself, its blobs, and
+//! autostarts `hecate-greetd ui`, which runs the login screen (QuickShell, `greeter.qml`) on
+//! top and gives hecate another user's layout when one is picked. When greetd has a session
+//! to start the UI writes `launched.json` and the supervisor tells hecate to exit, with nothing
+//! but the blobs on screen: hecate leaves that frame up and writes down where its blobs were
+//! (`background.blobs.save`), and the session's hecate carries on from there with its first
+//! frame. The UI goes with the compositor.
 
 use std::fs;
 use std::io;
@@ -22,8 +23,9 @@ use crate::export;
 use crate::sessions::{self, User};
 use crate::sys;
 
-/// The UI asks for another user (`request.json` says which).
-const EXIT_SWITCH_USER: i32 = 10;
+unsafe extern "C" {
+    fn umask(mask: u32) -> u32;
+}
 
 fn log(msg: impl AsRef<str>) {
     eprintln!("hecate-greetd: {}", msg.as_ref());
@@ -98,9 +100,8 @@ fn boot_id() -> Option<String> {
 }
 
 /// Whether a session was started from this login screen since boot: then the one that just
-/// ended left its desktop on screen, and the login screen starts from the user's desktop
-/// pictures (hecate's splash) instead of a dark frame while its UI loads. After a boot the
-/// screen comes from the boot splash, where a picture of a desktop would be out of place.
+/// ended left its blobs on screen, and the login screen carries on from where they were.
+/// After a boot there is nothing to carry on from.
 fn after_session(state: &Value) -> bool {
     state["session_boot_id"]
         .as_str()
@@ -143,35 +144,52 @@ fn pick_session(sessions: &[sessions::Session], user: &str, state: &Value) -> Op
         .or_else(|| sessions.first().map(|s| s.id.clone()))
 }
 
-/// The selected user's compositor settings, checked by `hecate validate` before hecate
-/// sees them. Returns whether `user.json` changed.
-///
-/// After a session (`after_session`), their splash pictures too, shown from the greeter's
-/// first frame and never written (`splash.save = false`): the user's directory isn't the
-/// greeter's to write, and the session's pictures are the ones the login screen fades into.
-fn write_user_compositor(runtime: &Path, user: Option<&str>, state: &Value) -> bool {
+/// Where the greeter's hecate carries its blobs on from (`background.blobs.resume`). In the
+/// UI's directory: hecate reloads its config on any JSON written next to it.
+fn resume_file(runtime: &Path) -> PathBuf {
+    runtime.join("ui/resume-blobs.json")
+}
+
+/// After a session this boot, a copy of where its hecate left the blobs, for the greeter's
+/// hecate to start from: the login screen's first frame is then the frame the session left.
+/// Otherwise nothing, and the blobs start anew. Returns whether there is something to carry on.
+fn prepare_resume(runtime: &Path, state: &Value) -> bool {
+    let dest = resume_file(runtime);
+    let _ = fs::remove_file(&dest);
+    if !after_session(state) {
+        return false;
+    }
+    let blobs = state["last_user"]
+        .as_str()
+        .and_then(|name| sys::read_passwd().into_iter().find(|p| p.name == name))
+        .as_ref()
+        .and_then(export::session_blobs);
+    match blobs {
+        Some(blobs) => sys::write_json(&dest, &blobs, 0o600).is_ok(),
+        None => false,
+    }
+}
+
+/// What the greeter adds to a user's tables: nothing of theirs can take its place.
+fn with_own_settings(mut fragment: Value, runtime: &Path) -> Value {
+    fragment["background"] = json!({ "blobs": { "resume": resume_file(runtime) } });
+    fragment
+}
+
+/// The selected user's keyboard and monitor layout, checked by `hecate validate` before hecate
+/// sees it. Returns whether `user.json` changed.
+fn write_user_compositor(runtime: &Path, user: Option<&str>) -> bool {
     let passwd = user.and_then(|name| sys::read_passwd().into_iter().find(|p| p.name == name));
     let snap = passwd.as_ref().and_then(export::snapshot);
-    let mut fragment = snap
+    let fragment = snap
         .as_ref()
         .map(|snap| export::compositor_fragment(snap))
         .unwrap_or_else(|| json!({}));
-    // Only while they share their look, like the pictures the UI fades into.
-    if after_session(state)
-        && snap.is_some()
-        && let Some(splash) = passwd.as_ref().and_then(export::splash_dir)
-        && let Some(map) = fragment.as_object_mut()
-    {
-        map.insert(
-            "splash".into(),
-            json!({ "enable": true, "dir": splash, "save": false }),
-        );
-    }
     let path = runtime.join("user.json");
     let old = fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-    if old.as_ref() == Some(&fragment) {
+    if old == Some(with_own_settings(fragment.clone(), runtime)) {
         return false;
     }
     let candidate = runtime.join("ui/user.check.json");
@@ -195,6 +213,7 @@ fn write_user_compositor(runtime: &Path, user: Option<&str>, state: &Value) -> b
         }
         let _ = fs::remove_file(&candidate);
     }
+    let checked = with_own_settings(checked, runtime);
     if old.as_ref() == Some(&checked) {
         return false;
     }
@@ -216,7 +235,8 @@ pub fn session(extra_args: &[String]) -> io::Result<()> {
     let ui = ui_dir(&runtime)?;
     let state = load_state();
     let user = pick_user(&users, &ui, &state);
-    write_user_compositor(&runtime, user.as_deref(), &state);
+    let resumed = prepare_resume(&runtime, &state);
+    write_user_compositor(&runtime, user.as_deref());
     if let Some(u) = &user {
         fs::write(ui.join("next-user"), u)?;
     }
@@ -225,10 +245,15 @@ pub fn session(extra_args: &[String]) -> io::Result<()> {
     sys::write_json(&config, &json!({ "include": [base, "user.json"] }), 0o600)?;
 
     log(format!(
-        "starting hecate for the login screen (user {}, splash {})",
-        user.as_deref().unwrap_or("-"),
-        after_session(&state)
+        "starting hecate for the login screen (user {}, blobs carried on from the session: {resumed})",
+        user.as_deref().unwrap_or("-")
     ));
+    // The session's hecate reads where this one leaves its blobs: whatever greetd's umask is,
+    // that file has to be readable by whoever logs in.
+    // SAFETY: umask only sets this process's file mode mask and cannot fail.
+    unsafe {
+        umask(0o022);
+    }
     let mut cmd = Command::new(sys::hecate_bin());
     cmd.arg("--config").arg(&config).args(extra_args);
     cmd.env("HECATE_GREETD_RUNTIME", &runtime)
@@ -253,35 +278,31 @@ pub fn session(extra_args: &[String]) -> io::Result<()> {
 struct UiRun<'a> {
     qml: &'a str,
     runtime: &'a Path,
-    user: Option<&'a str>,
+    user: Option<String>,
     preview: bool,
 }
 
-/// Prepare the user's home copy and run the UI once. `on_launched` runs once, as soon as the
-/// UI has written `launched.json` (greetd has accepted the session), while the UI still runs.
-fn run_ui(run: &UiRun, mut on_launched: impl FnMut()) -> io::Result<ExitStatus> {
-    let name = run.user.unwrap_or("nobody");
-    let home = run.runtime.join(format!("home-{name}"));
-    let passwd = run
-        .user
-        .and_then(|n| sys::read_passwd().into_iter().find(|p| p.name == n));
-    let snap = passwd.as_ref().and_then(export::snapshot);
-    match (&passwd, &snap) {
-        (Some(passwd), Some(snap)) => {
-            export::copy_home(snap, export::splash_dir(passwd).as_deref(), &home)?
-        }
-        _ => {
-            if home.exists() {
-                fs::remove_dir_all(&home)?;
-            }
-        }
-    }
-    // The shell only reads its config once it exists.
+/// What the UI tells its supervisor while it runs.
+enum UiEvent<'a> {
+    /// Another user is selected (`request.json`).
+    Selected(&'a str),
+    /// greetd has accepted the session (`launched.json`).
+    Launched,
+}
+
+/// The shell's home for the login screen: the same for every user, so nothing of theirs is in
+/// it. Its settings are the shell's defaults, or `HECATE_GREETD_SHELL_CONFIG` (the NixOS
+/// module's `shellSettings`).
+fn prepare_home(runtime: &Path) -> io::Result<PathBuf> {
+    let home = runtime.join("home");
     let config_dir = home.join(".config/illogical-impulse");
     fs::create_dir_all(&config_dir)?;
-    if !config_dir.join("config.json").exists() {
-        fs::write(config_dir.join("config.json"), "{}\n")?;
-    }
+    // The shell only reads its config once it exists.
+    let settings = std::env::var_os("HECATE_GREETD_SHELL_CONFIG")
+        .and_then(|path| sys::read_json_limited(Path::new(&path), 1 << 20))
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    sys::write_json(&config_dir.join("config.json"), &settings, 0o600)?;
     for d in [
         ".local/state/quickshell/user/generated",
         ".cache",
@@ -289,6 +310,33 @@ fn run_ui(run: &UiRun, mut on_launched: impl FnMut()) -> io::Result<ExitStatus> 
     ] {
         fs::create_dir_all(home.join(d))?;
     }
+    Ok(home)
+}
+
+/// The user `request.json` asks for, once per write of it.
+struct Requests {
+    path: PathBuf,
+    seen: Option<(std::time::SystemTime, u64)>,
+}
+
+impl Requests {
+    fn poll(&mut self) -> Option<String> {
+        let meta = fs::symlink_metadata(&self.path).ok()?;
+        let stamp = (meta.modified().ok()?, meta.len());
+        if self.seen == Some(stamp) {
+            return None;
+        }
+        // Half written: the next poll reads it again.
+        let request = sys::read_json_limited(&self.path, 1 << 16)?;
+        self.seen = Some(stamp);
+        request["user"].as_str().map(String::from)
+    }
+}
+
+/// Run the UI once. `on_event` hears of another user being selected and, once, of greetd
+/// having accepted the session, while the UI still runs.
+fn run_ui(run: &UiRun, mut on_event: impl FnMut(UiEvent)) -> io::Result<ExitStatus> {
+    let home = prepare_home(run.runtime)?;
     for stale in ["request.json", "result.json", "launched.json"] {
         let _ = fs::remove_file(run.runtime.join(stale));
     }
@@ -301,7 +349,7 @@ fn run_ui(run: &UiRun, mut on_launched: impl FnMut()) -> io::Result<ExitStatus> 
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("HECATE_GREETD_RUNTIME", run.runtime)
-        .env("HECATE_GREETD_USER", run.user.unwrap_or(""))
+        .env("HECATE_GREETD_USER", run.user.as_deref().unwrap_or(""))
         .env("QT_QPA_PLATFORM", "wayland");
     if run.preview {
         cmd.env("HECATE_GREETD_PREVIEW", "1");
@@ -317,6 +365,10 @@ fn run_ui(run: &UiRun, mut on_launched: impl FnMut()) -> io::Result<ExitStatus> 
     let mut child = cmd.spawn()?;
     let pgid = child.id();
     let launched = run.runtime.join("launched.json");
+    let mut requests = Requests {
+        path: run.runtime.join("request.json"),
+        seen: None,
+    };
     let mut seen_launch = false;
     let status = loop {
         match child.try_wait() {
@@ -324,9 +376,14 @@ fn run_ui(run: &UiRun, mut on_launched: impl FnMut()) -> io::Result<ExitStatus> 
             Ok(None) => {}
             Err(e) => break Err(e),
         }
-        if !seen_launch && launched.is_file() {
-            seen_launch = true;
-            on_launched();
+        if !seen_launch {
+            if let Some(user) = requests.poll() {
+                on_event(UiEvent::Selected(&user));
+            }
+            if launched.is_file() {
+                seen_launch = true;
+                on_event(UiEvent::Launched);
+            }
         }
         std::thread::sleep(Duration::from_millis(10));
     };
@@ -352,6 +409,17 @@ fn write_choices(runtime: &Path, users: &[User], sessions: &[sessions::Session])
         &serde_json::to_value(sessions)?,
         0o600,
     )
+}
+
+/// `hecate msg <args>` to the hecate this runs in.
+fn hecate_msg(args: &[&str]) {
+    let _ = Command::new(sys::hecate_bin())
+        .arg("msg")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// `hecate-greetd ui`: run inside the greeter's hecate.
@@ -381,19 +449,25 @@ pub fn ui() -> io::Result<()> {
         let session = user
             .as_deref()
             .and_then(|u| pick_session(&sessions, u, &state));
+        // What each user logged into last, for when the UI switches to them.
+        let last: serde_json::Map<String, Value> = users
+            .iter()
+            .filter_map(|u| {
+                Some((
+                    u.name.clone(),
+                    json!(pick_session(&sessions, &u.name, &state)?),
+                ))
+            })
+            .collect();
         sys::write_json(
             &ui.join("selection.json"),
-            &json!({ "user": user, "session": session }),
+            &json!({ "user": user, "session": session, "sessions": last }),
             0o600,
         )?;
 
-        if write_user_compositor(&runtime, user.as_deref(), &state) && in_compositor {
+        if write_user_compositor(&runtime, user.as_deref()) && in_compositor {
             // Apply the layout before the UI maps its surfaces.
-            let _ = Command::new(sys::hecate_bin())
-                .args(["msg", "reload"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .status();
+            hecate_msg(&["reload"]);
         }
 
         let use_fallback = failures >= 3 && !fallback.is_empty();
@@ -402,24 +476,31 @@ pub fn ui() -> io::Result<()> {
             &UiRun {
                 qml: if use_fallback { &fallback } else { &qml },
                 runtime: &ui,
-                user: user.as_deref(),
+                user: user.clone(),
                 preview: false,
             },
-            || {
-                // greetd has the session and starts it once hecate is gone. Remember the
-                // login first: this process goes down with hecate too, or soon after.
-                remember_login(&mut state, &ui);
-                log(format!(
-                    "logging in after {:.1} s, telling hecate to exit",
-                    started.elapsed().as_secs_f64()
-                ));
-                if in_compositor {
-                    let _ = Command::new(sys::hecate_bin())
-                        .args(["msg", "exit"])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status();
+            |event| match event {
+                UiEvent::Selected(name) => {
+                    if user.as_deref() == Some(name) || !users.iter().any(|u| u.name == name) {
+                        return;
+                    }
+                    // Their keyboard and monitors, while the UI stays up.
+                    user = Some(name.to_string());
+                    if write_user_compositor(&runtime, Some(name)) && in_compositor {
+                        hecate_msg(&["reload"]);
+                    }
+                }
+                UiEvent::Launched => {
+                    // greetd has the session and starts it once hecate is gone. Remember the
+                    // login first: this process goes down with hecate too, or soon after.
+                    remember_login(&mut state, &ui);
+                    log(format!(
+                        "logging in after {:.1} s, telling hecate to exit",
+                        started.elapsed().as_secs_f64()
+                    ));
+                    if in_compositor {
+                        hecate_msg(&["exit"]);
+                    }
                 }
             },
         );
@@ -434,52 +515,36 @@ pub fn ui() -> io::Result<()> {
             remember_login(&mut state, &ui);
             break;
         }
-        match code {
-            Some(EXIT_SWITCH_USER) => {
-                failures = 0;
-                let req = sys::read_json_limited(&ui.join("request.json"), 1 << 16);
-                if let Some(u) = req.as_ref().and_then(|r| r["user"].as_str()) {
-                    user = Some(u.to_string());
-                }
-            }
-            other => {
-                if in_compositor && !compositor_alive() {
-                    // Gone under us (it exits on the UI's request at login, but then
-                    // `launched.json` says so): nothing left to show anything on.
-                    log("the compositor is gone, stopping");
-                    return Ok(());
-                }
-                log(format!(
-                    "the login screen exited ({other:?}, {:?})",
-                    status.err()
-                ));
-                if started.elapsed() < Duration::from_secs(20) {
-                    failures += 1;
-                } else {
-                    failures = 0;
-                }
-                if failures >= 6 {
-                    return Err(io::Error::other("the login screen keeps failing"));
-                }
-                std::thread::sleep(Duration::from_millis(500 * failures as u64));
-            }
+        if in_compositor && !compositor_alive() {
+            // Gone under us (it exits on the UI's request at login, but then
+            // `launched.json` says so): nothing left to show anything on.
+            log("the compositor is gone, stopping");
+            return Ok(());
         }
+        log(format!(
+            "the login screen exited ({code:?}, {:?})",
+            status.err()
+        ));
+        if started.elapsed() < Duration::from_secs(20) {
+            failures += 1;
+        } else {
+            failures = 0;
+        }
+        if failures >= 6 {
+            return Err(io::Error::other("the login screen keeps failing"));
+        }
+        std::thread::sleep(Duration::from_millis(500 * failures as u64));
     }
 
     // Normally done at the login and hecate is gone (the message fails at once); this is for
     // a UI that exited 0 without logging in, or whose message didn't get through.
     if in_compositor {
-        let _ = Command::new(sys::hecate_bin())
-            .args(["msg", "exit"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        hecate_msg(&["exit"]);
     }
     Ok(())
 }
 
-/// `hecate-greetd preview`: the login screen with your current look, in your session.
+/// `hecate-greetd preview`: the login screen over your session, as it is at login.
 /// Nothing logs in; Escape or "logging in" closes it.
 pub fn preview() -> io::Result<()> {
     if let Err(e) = export::sync() {
@@ -493,7 +558,7 @@ pub fn preview() -> io::Result<()> {
     let state = json!({});
     sys::write_json(
         &runtime.join("selection.json"),
-        &json!({ "user": me.name, "session": pick_session(&sessions, &me.name, &state) }),
+        &json!({ "user": me.name, "session": pick_session(&sessions, &me.name, &state), "sessions": {} }),
         0o600,
     )?;
     let qml = sys::env_or("HECATE_GREETD_QML", "");
@@ -504,10 +569,10 @@ pub fn preview() -> io::Result<()> {
         &UiRun {
             qml: &qml,
             runtime: &runtime,
-            user: Some(&me.name),
+            user: Some(me.name.clone()),
             preview: true,
         },
-        || {},
+        |_| {},
     )?;
     Ok(())
 }
@@ -517,7 +582,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn splash_only_after_a_session_this_boot() {
+    fn blobs_carry_on_only_after_a_session_this_boot() {
         assert!(!after_session(&json!({})));
         assert!(!after_session(
             &json!({ "session_boot_id": "not this boot" })
@@ -525,5 +590,46 @@ mod tests {
         if let Some(boot) = boot_id() {
             assert!(after_session(&json!({ "session_boot_id": boot })));
         }
+        let runtime = std::env::temp_dir().join(format!("hg-resume-{}", std::process::id()));
+        fs::create_dir_all(runtime.join("ui")).unwrap();
+        fs::write(resume_file(&runtime), b"{}").unwrap();
+        assert!(!prepare_resume(&runtime, &json!({ "last_user": "root" })));
+        assert!(!resume_file(&runtime).exists(), "a stale copy is gone");
+        fs::remove_dir_all(&runtime).unwrap();
+    }
+
+    #[test]
+    fn a_user_cannot_replace_the_greeters_own_settings() {
+        let runtime = Path::new("/run/user/1/hecate-greetd");
+        let theirs = json!({
+            "keyboard": { "layout": "hu" },
+            "background": { "blobs": { "enable": false, "resume": "/etc/passwd" } }
+        });
+        assert_eq!(
+            with_own_settings(theirs, runtime),
+            json!({
+                "keyboard": { "layout": "hu" },
+                "background": { "blobs": { "resume": "/run/user/1/hecate-greetd/ui/resume-blobs.json" } }
+            })
+        );
+    }
+
+    #[test]
+    fn a_request_is_heard_once_per_write() {
+        let dir = std::env::temp_dir().join(format!("hg-request-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut requests = Requests {
+            path: dir.join("request.json"),
+            seen: None,
+        };
+        assert_eq!(requests.poll(), None, "nothing asked yet");
+        fs::write(&requests.path, b"{\"user\": \"gue").unwrap();
+        assert_eq!(requests.poll(), None, "half written");
+        fs::write(&requests.path, b"{\"user\": \"guest\", \"seq\": 1}").unwrap();
+        assert_eq!(requests.poll().as_deref(), Some("guest"));
+        assert_eq!(requests.poll(), None, "heard already");
+        fs::write(&requests.path, b"{\"user\": \"cakes\", \"seq\": 12}").unwrap();
+        assert_eq!(requests.poll().as_deref(), Some("cakes"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
